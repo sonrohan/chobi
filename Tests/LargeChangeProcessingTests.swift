@@ -140,4 +140,133 @@ final class LargeChangeProcessingTests: XCTestCase {
             result.symbolReviewGroups.isEmpty,
             "Symbol review groups should be constructed for navigation")
     }
+
+    /// Exercises the larger end-to-end in-memory path that tends to hurt on big branches:
+    /// raw diff parsing, deterministic rule generation, model conversion, and triage.
+    func testLargeRepositoryDiffPipelineDoesNotExplode() {
+        let fileCount = 12000
+        let symbolCount = 9000
+        let runId = UUID()
+        let diffText = makeLargeDiff(fileCount: fileCount)
+        let start = Date()
+
+        let parsedFiles = DiffParser.parse(diffText, profile: .generic)
+        XCTAssertEqual(parsedFiles.count, fileCount)
+
+        let files = parsedFiles.map { parsed -> ChangedFile in
+            ChangedFile(
+                analysisRunId: runId,
+                path: parsed.newPath ?? parsed.oldPath ?? "unknown",
+                status: parsed.status,
+                additions: parsed.additions,
+                deletions: parsed.deletions,
+                classification: parsed.classification,
+                hunks: parsed.hunks
+            )
+        }
+        XCTAssertEqual(files.reduce(0) { $0 + $1.hunks.count }, fileCount)
+
+        let sourceFiles = files.filter { $0.classification == .source }
+        let symbols = makeSymbols(runId: runId, files: sourceFiles, count: symbolCount)
+        let filePathMap = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0.path) })
+        let fileByPath = Dictionary(uniqueKeysWithValues: files.map { ($0.path, $0) })
+
+        let ruleFindingsByPath = RulesEngine.runDeterministicRules(
+            files: parsedFiles,
+            symbols: symbols,
+            filePathMap: filePathMap,
+            profile: .generic
+        )
+        let findings = ruleFindingsByPath.flatMap { path, findings -> [Finding] in
+            guard let file = fileByPath[path] else { return [] }
+            return findings.map { finding in
+                Finding(
+                    id: UUID(),
+                    analysisRunId: runId,
+                    changedFileId: file.id,
+                    severity: finding.severity,
+                    category: finding.category,
+                    message: finding.message,
+                    lineStart: finding.lineStart,
+                    lineEnd: finding.lineEnd,
+                    ruleSource: finding.ruleSource,
+                    evidence: finding.evidence
+                )
+            }
+        }
+
+        let triage = TriageEngine.deriveTriage(
+            files: files,
+            symbols: symbols,
+            findings: findings,
+            riskScore: 85,
+            profile: .generic
+        )
+        let duration = Date().timeIntervalSince(start)
+
+        XCTAssertFalse(triage.changeBuckets.isEmpty)
+        XCTAssertFalse(triage.reviewTargets.isEmpty)
+        XCTAssertFalse(triage.symbolReviewGroups.isEmpty)
+        XCTAssertEqual(triage.skimTargets.count, 2000)
+        XCTAssertLessThanOrEqual(triage.reviewTargets.count, triage.riskHighlights.count)
+        XCTAssertLessThan(duration, 30.0, "Large repository pipeline took too long: \(duration)")
+    }
+
+    private func makeLargeDiff(fileCount: Int) -> String {
+        var diff = String()
+        diff.reserveCapacity(fileCount * 360)
+
+        for i in 1...fileCount {
+            let path: String
+            if i <= fileCount - 2000 {
+                path = "Sources/Feature\(i % 250)/Service\(i).swift"
+            } else if i <= fileCount - 1000 {
+                path = "Configs/generated_setting_\(i).json"
+            } else {
+                path = "Docs/guide_\(i).md"
+            }
+
+            diff += """
+                diff --git a/\(path) b/\(path)
+                index 0000000..1111111 100644
+                --- a/\(path)
+                +++ b/\(path)
+                @@ -1,4 +1,8 @@
+                 final class Fixture\(i) {
+                -    func oldValue() -> Int { 1 }
+                +    func newValue() -> Int { \(i) }
+                +    func changedBehavior() -> String { "value-\(i)" }
+                 }
+
+                """
+        }
+
+        return diff
+    }
+
+    private func makeSymbols(runId: UUID, files: [ChangedFile], count: Int) -> [ChangedSymbol] {
+        (0..<count).map { index in
+            let file = files[index % files.count]
+            let isCritical = index % 97 == 0
+            return ChangedSymbol(
+                analysisRunId: runId,
+                changedFileId: file.id,
+                name: "changedBehavior\(index)",
+                kind: .method,
+                startLine: 3,
+                endLine: 6,
+                callers: (0..<(index % 9)).map { caller in
+                    "Sources/Caller\(caller).swift:call\(index)"
+                },
+                callees: ["dependency\(index % 31)"],
+                semanticType: "function_definition",
+                metadata: [
+                    "qualified_name": "\(file.path).changedBehavior\(index)",
+                    "semantic_area": isCritical ? "security_authentication" : "general",
+                    "caller_resolution": "indexed",
+                    "language": "swift",
+                ]
+            )
+        }
+    }
 }

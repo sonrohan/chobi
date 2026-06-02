@@ -557,6 +557,7 @@ struct TriageEngine {
         }
 
         let fileById = Dictionary(uniqueKeysWithValues: effectiveFiles.map { ($0.id, $0) })
+        let symbolsByFile = Dictionary(grouping: symbols, by: \.changedFileId)
 
         // Convert for rules engine
         let parsedFiles = effectiveFiles.map { f -> DiffParser.ParsedFile in
@@ -598,13 +599,13 @@ struct TriageEngine {
 
         for file in effectiveFiles {
             let fileFindings = findingsByPath[file.path] ?? []
-            let fileSymbolsForBucket = symbols.filter { $0.changedFileId == file.id }
+            let fileSymbolsForBucket = symbolsByFile[file.id] ?? []
             let matchedRule = profile.bucketRule(
                 for: file, findings: fileFindings, symbols: fileSymbolsForBucket)
             let type = matchedRule?.bucketType ?? .behavior
             let bucketKey = matchedRule?.id ?? type.rawValue
             let title = matchedRule?.title ?? type.displayTitle
-            let fileSymbols = symbols.filter { $0.changedFileId == file.id }.map { $0.name }
+            let fileSymbols = fileSymbolsForBucket.map { $0.name }
             let riskReasons = fileFindings.map { $0.message }
             let evidence = fileFindings.compactMap { $0.evidence }
             let fileRisk = maxSeverity(fileFindings.map { $0.severity })
@@ -654,9 +655,15 @@ struct TriageEngine {
             return b2
         }
 
+        let fallbackBucketId = changeBuckets.first?.id ?? "bucket-behavior"
+        var bucketIdByPath: [String: String] = [:]
+        for bucket in changeBuckets {
+            for path in bucket.files {
+                bucketIdByPath[path] = bucket.id
+            }
+        }
         let bucketIdForPath: (String) -> String = { path in
-            changeBuckets.first { $0.files.contains(path) }?.id ?? changeBuckets.first?.id
-                ?? "bucket-behavior"
+            bucketIdByPath[path] ?? fallbackBucketId
         }
 
         // Build risk highlights from findings
@@ -727,11 +734,12 @@ struct TriageEngine {
         // Build review targets from actionable highlights. Priority signals stay medium+;
         // targets can include low-severity AST entry points so ordinary feature work
         // still has useful reviewer navigation.
+        let fileByPath = Dictionary(uniqueKeysWithValues: effectiveFiles.map { ($0.path, $0) })
         let reviewTargets: [ReviewTarget] =
             riskHighlights
             .filter { $0.severity >= .low }
             .enumerated().map { idx, h in
-                let matchFile = effectiveFiles.first { $0.path == h.filePath }
+                let matchFile = fileByPath[h.filePath]
                 return ReviewTarget(
                     id: UUID(),
                     priority: idx + 1,
