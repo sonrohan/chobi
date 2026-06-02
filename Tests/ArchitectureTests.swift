@@ -8,6 +8,42 @@ final class ArchitectureTests: XCTestCase {
 
     // MARK: - ImpactGraphViewModel Tests
 
+    func testImpactScorerPrioritizesBlastRadiusOverDependencyVolume() {
+        XCTAssertEqual(
+            ImpactScorer.level(
+                directCallerCount: 6,
+                directCalleeCount: 0,
+                fileCount: 1
+            ),
+            .high
+        )
+        XCTAssertEqual(
+            ImpactScorer.level(
+                directCallerCount: 0,
+                directCalleeCount: 1,
+                fileCount: 5
+            ),
+            .high
+        )
+        XCTAssertEqual(
+            ImpactScorer.level(
+                directCallerCount: 0,
+                directCalleeCount: 20,
+                fileCount: 1
+            ),
+            .low
+        )
+        XCTAssertEqual(
+            ImpactScorer.level(
+                directCallerCount: 1,
+                directCalleeCount: 1,
+                fileCount: 1,
+                isPublic: true
+            ),
+            .medium
+        )
+    }
+
     func testImpactGraphViewModelRanksAndSearchesChangedSymbols() async {
         let run = AnalysisRun(pullRequestId: UUID(), baseSha: "base", headSha: "head")
         let pr = PullRequest(
@@ -61,6 +97,7 @@ final class ArchitectureTests: XCTestCase {
         let viewModel = ImpactGraphViewModel()
         viewModel.load(details: details)
 
+        XCTAssertEqual(viewModel.graphDirection, .callers)
         XCTAssertEqual(viewModel.filteredImpacts.first?.symbol.name, "runAnalysis")
         XCTAssertEqual(viewModel.selectedImpact?.symbol.name, "runAnalysis")
         XCTAssertEqual(viewModel.selectedImpact?.summary.directCallerCount, 3)
@@ -244,6 +281,151 @@ final class ArchitectureTests: XCTestCase {
         XCTAssertTrue(viewModel.fileSearchText.isEmpty)
         XCTAssertFalse(viewModel.excludedExtensions.contains(".swift"))
         XCTAssertFalse(viewModel.showUnviewedOnly)
+    }
+
+    func testReviewModeViewModelBuildsUsefulAIReviewPlan() async {
+        let run = AnalysisRun(
+            pullRequestId: UUID(),
+            baseSha: "1234567890abcdef",
+            headSha: "fedcba0987654321",
+            riskScore: 72
+        )
+        let pr = PullRequest(
+            prNumber: 42,
+            title: "Tighten review planning",
+            baseSha: run.baseSha,
+            headSha: run.headSha,
+            author: "Rohan",
+            repository: "chobi"
+        )
+        let file = ChangedFile(
+            analysisRunId: run.id,
+            path: "Chobi/Services/AppState.swift",
+            status: .modified,
+            additions: 18,
+            deletions: 3,
+            classification: .source,
+            hunks: [
+                DiffHunk(
+                    oldStart: 100,
+                    oldLines: 6,
+                    newStart: 112,
+                    newLines: 12,
+                    lines: []
+                )
+            ]
+        )
+        let docFile = ChangedFile(
+            analysisRunId: run.id,
+            path: "README.md",
+            status: .modified,
+            additions: 2,
+            deletions: 0,
+            classification: .documentation,
+            hunks: []
+        )
+        let symbol = ChangedSymbol(
+            analysisRunId: run.id,
+            changedFileId: file.id,
+            name: "refreshActiveRepo",
+            kind: .method,
+            startLine: 112,
+            endLine: 148,
+            callers: [
+                "Chobi/Views/ContentView.swift:300:body",
+                "Tests/AppStateTests.swift:44:testRefresh",
+            ],
+            callees: ["PersistenceService.getAnalysisDetails"],
+            metadata: ["visibility": "public", "semantic_area": "state"]
+        )
+        let finding = Finding(
+            id: UUID(),
+            analysisRunId: run.id,
+            changedFileId: file.id,
+            severity: .high,
+            category: .architecture,
+            message: "Global coordinator behavior changed.",
+            lineStart: 118,
+            lineEnd: 126,
+            ruleSource: "deterministic-review-policy",
+            evidence: "AppState owns long-running data store behavior."
+        )
+        let target = ReviewTarget(
+            id: UUID(),
+            priority: 1,
+            severity: .high,
+            title: "Global state refresh path changed",
+            filePath: file.path,
+            lineStart: 118,
+            lineEnd: 126,
+            reason: "Coordinator behavior affects loaded repositories.",
+            evidence: "refreshActiveRepo writes selected repository analysis details.",
+            source: "rule",
+            changedFileId: file.id,
+            hunkIndex: 0
+        )
+        let details = AnalysisDetails(
+            run: run,
+            pr: pr,
+            files: [file, docFile],
+            symbols: [symbol],
+            findings: [finding],
+            reviewTargets: [target],
+            changeBuckets: [
+                ChangeBucket(
+                    id: "bucket-behavior",
+                    type: .behavior,
+                    title: "Production behavior changes",
+                    summary: "State refresh behavior changed.",
+                    files: [file.path],
+                    symbols: [symbol.name],
+                    riskLevel: .high,
+                    riskReasons: ["Global state refresh path changed"],
+                    evidence: ["AppState refresh path"],
+                    reviewOrder: 1
+                )
+            ],
+            riskHighlights: [
+                RiskHighlight(
+                    id: "risk-state",
+                    bucketId: "bucket-behavior",
+                    severity: .high,
+                    category: .runtime,
+                    title: "Global state refresh path changed",
+                    filePath: file.path,
+                    lineStart: 118,
+                    lineEnd: 126,
+                    evidence: ["refreshActiveRepo writes selected repository analysis details."],
+                    source: "rule",
+                    confidence: "high"
+                )
+            ],
+            skimTargets: [
+                SkimTarget(
+                    id: "skim-readme",
+                    filePath: docFile.path,
+                    reason: "Documentation-only changes.",
+                    classification: .documentation,
+                    additions: docFile.additions,
+                    deletions: docFile.deletions
+                )
+            ],
+            riskFactors: ["Production source code changed"],
+            symbolReviewGroups: []
+        )
+
+        let plan = ReviewModeViewModel().reviewPlanText(details: details)
+
+        XCTAssertTrue(plan.contains("# AI Review Plan"))
+        XCTAssertTrue(plan.contains("Base: `1234567890ab`"))
+        XCTAssertTrue(plan.contains("Head: `fedcba098765`"))
+        XCTAssertTrue(plan.contains("P1 HIGH: Global state refresh path changed"))
+        XCTAssertTrue(plan.contains("Location: `Chobi/Services/AppState.swift:L118-L126`"))
+        XCTAssertTrue(plan.contains("`refreshActiveRepo` (method)"))
+        XCTAssertTrue(plan.contains("Callers: 2; callees: 1"))
+        XCTAssertTrue(plan.contains("@@ -100,6 +112,12 @@"))
+        XCTAssertTrue(plan.contains("HIGH architecture: Global coordinator behavior changed."))
+        XCTAssertTrue(plan.contains("Documentation-only changes."))
     }
 
     // MARK: - WorkspacePickerViewModel Tests

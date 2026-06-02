@@ -89,6 +89,9 @@ actor ImpactGraphService: ImpactGraphServiceProtocol {
         let nodes = latestGraph.nodes
             .filter { selectedNodeIds.contains($0.id) }
             .map(mapNode)
+        let testReferenceCount = latestGraph.nodes.filter {
+            selectedNodeIds.contains($0.id) && $0.isTest
+        }.count
         let edges = selectedEdges.map {
             CallEdge(
                 id: $0.id,
@@ -100,14 +103,25 @@ actor ImpactGraphService: ImpactGraphServiceProtocol {
                 sourceLine: $0.callSite?.startLine
             )
         }
+        let directCallerCount = latestGraph.edges.filter { $0.calleeId == rootSymbolId }.count
+        let directCalleeCount = latestGraph.edges.filter { $0.callerId == rootSymbolId }.count
+        let transitiveCallerCount = selectedEdges.filter { $0.calleeId == rootSymbolId }.count
+        let transitiveCalleeCount = selectedEdges.filter { $0.callerId == rootSymbolId }.count
+        let fileCount = Set(nodes.map(\.filePath)).count
         let summary = ImpactSummary(
-            directCallerCount: latestGraph.edges.filter { $0.calleeId == rootSymbolId }.count,
-            directCalleeCount: latestGraph.edges.filter { $0.callerId == rootSymbolId }.count,
-            transitiveCallerCount: selectedEdges.filter { $0.calleeId == rootSymbolId }.count,
-            transitiveCalleeCount: selectedEdges.filter { $0.callerId == rootSymbolId }.count,
-            fileCount: Set(nodes.map(\.filePath)).count,
-            testReferenceCount: nodes.filter { $0.filePath.lowercased().contains("test") }.count,
-            impactLevel: impactLevel(nodeCount: nodes.count, edgeCount: edges.count),
+            directCallerCount: directCallerCount,
+            directCalleeCount: directCalleeCount,
+            transitiveCallerCount: transitiveCallerCount,
+            transitiveCalleeCount: transitiveCalleeCount,
+            fileCount: fileCount,
+            testReferenceCount: testReferenceCount,
+            impactLevel: ImpactScorer.level(
+                directCallerCount: directCallerCount,
+                directCalleeCount: directCalleeCount,
+                transitiveCallerCount: transitiveCallerCount,
+                transitiveCalleeCount: transitiveCalleeCount,
+                fileCount: fileCount
+            ),
             confidence: latestGraph.confidence == .high ? .high : .medium
         )
         return ImpactGraph(
@@ -182,7 +196,7 @@ actor ImpactGraphService: ImpactGraphServiceProtocol {
                     endColumn: nil
                 ),
                 isChangedInPR: true,
-                isTest: isTestPath(filePath),
+                isTest: symbol.metadata["is_test"] == "true",
                 confidence: .low
             )
 
@@ -210,7 +224,7 @@ actor ImpactGraphService: ImpactGraphServiceProtocol {
                         endColumn: nil
                     ),
                     isChangedInPR: filesById.values.contains { $0.path == callerPath },
-                    isTest: isTestPath(callerPath),
+                    isTest: false,
                     confidence: .low
                 )
                 edges.append(
@@ -306,14 +320,4 @@ actor ImpactGraphService: ImpactGraphServiceProtocol {
         )
     }
 
-    private func impactLevel(nodeCount: Int, edgeCount: Int) -> ImpactLevel {
-        if edgeCount >= 10 || nodeCount >= 12 { return .high }
-        if edgeCount >= 4 || nodeCount >= 6 { return .medium }
-        return .low
-    }
-
-    private func isTestPath(_ path: String) -> Bool {
-        let lower = path.lowercased()
-        return lower.contains("test") || lower.contains("spec")
-    }
 }

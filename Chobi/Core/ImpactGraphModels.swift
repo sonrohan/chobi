@@ -45,6 +45,49 @@ enum CallGraphConfidence: String, Codable, Hashable {
     }
 }
 
+enum ImpactScorer {
+    nonisolated static func level(
+        directCallerCount: Int,
+        directCalleeCount: Int,
+        transitiveCallerCount: Int? = nil,
+        transitiveCalleeCount: Int? = nil,
+        fileCount: Int,
+        isPublic: Bool = false
+    ) -> ImpactLevel {
+        let affectedFileCount = max(1, fileCount)
+        let callerCount = max(directCallerCount, transitiveCallerCount ?? directCallerCount)
+        let calleeCount = max(directCalleeCount, transitiveCalleeCount ?? directCalleeCount)
+        let blastRadiusScore =
+            affectedFileCount * 5 + callerCount * 3 + min(calleeCount, 5)
+            + (isPublic ? 4 : 0)
+
+        if affectedFileCount >= 5 || callerCount >= 6 || blastRadiusScore >= 30 {
+            return .high
+        }
+        if affectedFileCount >= 2 || callerCount >= 2 || blastRadiusScore >= 12 {
+            return .medium
+        }
+        return .low
+    }
+
+    nonisolated static func level(
+        for symbol: ChangedSymbol,
+        fileCount: Int,
+        transitiveCallerCount: Int? = nil,
+        transitiveCalleeCount: Int? = nil
+    ) -> ImpactLevel {
+        level(
+            directCallerCount: symbol.callers.count,
+            directCalleeCount: symbol.callees.count,
+            transitiveCallerCount: transitiveCallerCount,
+            transitiveCalleeCount: transitiveCalleeCount,
+            fileCount: fileCount,
+            isPublic: symbol.metadata["visibility"] == "public"
+                || symbol.metadata["is_public"] == "true"
+        )
+    }
+}
+
 struct SymbolNode: Identifiable, Codable, Hashable {
     let id: String
     let name: String
@@ -175,5 +218,4 @@ struct InlineImpactMarker: Identifiable, Hashable {
     let hunkIndex: Int
     let summary: String
     let metrics: ImpactSummary
-    let isContinuation: Bool
 }

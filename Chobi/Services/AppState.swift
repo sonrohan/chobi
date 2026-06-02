@@ -209,10 +209,8 @@ class AppState {
             return
         }
 
-        let profile = AnalysisProfileStore.load(repoPath: repoPath)
-
         let startDiff = Date()
-        let parsedFiles = DiffParser.parse(commitDiff, profile: profile)
+        let parsedFiles = DiffParser.parse(commitDiff)
         metrics.diffParsingTime = Date().timeIntervalSince(startDiff)
         metrics.changedFilesCount = parsedFiles.count
 
@@ -247,8 +245,7 @@ class AppState {
         let startRules = Date()
         let ruleResults = RulesEngine.runDeterministicRules(
             files: parsedFiles, symbols: allSymbols,
-            filePathMap: Dictionary(uniqueKeysWithValues: changedFiles.map { ($0.id, $0.path) }),
-            profile: profile
+            filePathMap: Dictionary(uniqueKeysWithValues: changedFiles.map { ($0.id, $0.path) })
         )
         var allFindings: [Finding] = []
         for (path, rulefindings) in ruleResults {
@@ -273,13 +270,13 @@ class AppState {
                         severity: $0.severity, category: $0.category, message: $0.message,
                         lineStart: $0.lineStart, lineEnd: $0.lineEnd, ruleSource: $0.ruleSource,
                         evidence: $0.evidence)
-                }, profile: profile)
+                })
         metrics.rulesEngineTime = Date().timeIntervalSince(startRules)
 
         let startTriage = Date()
         let triage = TriageEngine.deriveTriage(
             files: changedFiles, symbols: allSymbols, findings: allFindings,
-            riskScore: breakdown.score, profile: profile)
+            riskScore: breakdown.score)
         metrics.triageEngineTime = Date().timeIntervalSince(startTriage)
 
         var mockRun = run

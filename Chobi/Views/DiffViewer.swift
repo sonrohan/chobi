@@ -53,7 +53,7 @@ struct DiffViewerPanel: View {
 
                         Spacer()
 
-                        // 1. AST Impact Filter (Menu)
+                        // 1. Impact Filter (Menu)
                         Menu {
                             Button {
                                 reviewViewModel.minimumImpactFilter = .all
@@ -110,7 +110,7 @@ struct DiffViewerPanel: View {
                         }
                         .menuStyle(.borderlessButton)
                         .menuIndicator(.hidden)
-                        .help("Filter files by AST impact level")
+                        .help("Filter files by impact level")
                         .frame(width: 24, height: 22)
 
                         // 2. Filter Popover Toggle
@@ -206,8 +206,14 @@ struct DiffViewerPanel: View {
                         activeFile: activeFile,
                         compactTree: reviewViewModel.compactFileTree,
                         impactViewModel: impactViewModel,
-                        badges: fileTreeBadges
-                    )
+                        selectedImpactId: reviewViewModel.selectedInlineImpactMarkerId,
+                        badges: fileTreeBadges,
+                        onSelectImpact: { impact in
+                            impactViewModel.select(impact)
+                            reviewViewModel.selectedInlineImpactMarkerId = impact.id
+                            viewModel.isImpactInspectorVisible = true
+                            viewModel.jumpToImpactRoot(impact)
+                        })
                 }
                 .frame(minWidth: 200, idealWidth: 260, maxWidth: 480)
 
@@ -219,13 +225,23 @@ struct DiffViewerPanel: View {
                         impactViewModel: impactViewModel,
                         impactFilter: reviewViewModel.minimumImpactFilter,
                         selectedMarkerId: reviewViewModel.selectedInlineImpactMarkerId,
+                        expandedImpactIds: reviewViewModel.expandedInlineImpactIds,
                         activeHunkIndex: viewModel.activeHunkIndex,
                         activeTarget: viewModel.activeTarget?.filePath == file.path
                             ? viewModel.activeTarget : nil
-                    ) { impact in
+                    ) {
+                        reviewViewModel.copyFileContext(
+                            file: file,
+                            impacts: impactViewModel.visibleImpacts(for: file),
+                            details: details
+                        )
+                    } onOpenImpact: { impact in
                         impactViewModel.select(impact)
                         reviewViewModel.selectedInlineImpactMarkerId = impact.id
+                        viewModel.isImpactInspectorVisible = true
                         viewModel.jumpToImpactRoot(impact)
+                    } onToggleImpactExpansion: { impact in
+                        reviewViewModel.toggleInlineImpactExpansion(impact.id)
                     }
                 } else {
                     VStack {
@@ -251,9 +267,10 @@ struct DiffViewerPanel: View {
                     .background(Color.bgCanvas)
                 }
 
-                // Right-side Impact Explorer inspector
+                // Right-side Impact inspector
                 if viewModel.isImpactInspectorVisible {
                     ImpactExplorerSidebar(
+                        reviewViewModel: reviewViewModel,
                         impactViewModel: impactViewModel,
                         details: details,
                         onClose: { viewModel.isImpactInspectorVisible = false },
@@ -272,9 +289,15 @@ struct DiffViewerPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             reviewViewModel.markReviewed(activeFile?.id)
+            if reviewViewModel.shouldAutoOpenInspector(file: activeFile, badges: fileTreeBadges) {
+                viewModel.isImpactInspectorVisible = true
+            }
         }
         .onChange(of: activeFile?.id) { _, id in
             reviewViewModel.markReviewed(id)
+            if reviewViewModel.shouldAutoOpenInspector(file: activeFile, badges: fileTreeBadges) {
+                viewModel.isImpactInspectorVisible = true
+            }
         }
         .onChange(of: filteredFiles.map(\.id)) { _, ids in
             if let activeId = viewModel.activeFileId, !ids.contains(activeId) {
@@ -581,7 +604,9 @@ struct FileListSidebar: View {
     let activeFile: ChangedFile?
     let compactTree: Bool
     let impactViewModel: ImpactGraphViewModel
+    let selectedImpactId: UUID?
     let badges: [UUID: ReviewFileTreeBadge]
+    let onSelectImpact: (SymbolImpact) -> Void
     var width: CGFloat = 220
     @State private var collapsedFolders: Set<String> = []
     @State private var expandedFileIds: Set<UUID> = []
@@ -602,10 +627,13 @@ struct FileListSidebar: View {
                         expandedFileIds: $expandedFileIds,
                         compactTree: compactTree,
                         impactViewModel: impactViewModel,
-                        badges: badges
-                    ) { file in
-                        viewModel.jumpToFile(file.id)
-                    }
+                        selectedImpactId: selectedImpactId,
+                        badges: badges,
+                        onSelectFile: { file in
+                            viewModel.jumpToFile(file.id)
+                        },
+                        onSelectImpact: onSelectImpact
+                    )
                 }
 
                 if files.isEmpty {
@@ -741,8 +769,10 @@ struct FileTreeNodeView: View {
     @Binding var expandedFileIds: Set<UUID>
     let compactTree: Bool
     let impactViewModel: ImpactGraphViewModel
+    let selectedImpactId: UUID?
     let badges: [UUID: ReviewFileTreeBadge]
     let onSelectFile: (ChangedFile) -> Void
+    let onSelectImpact: (SymbolImpact) -> Void
 
     var displayedNode: FileTreeNode {
         guard compactTree else { return node }
@@ -820,9 +850,11 @@ struct FileTreeNodeView: View {
                         isActive: activeFile?.id == file.id,
                         depth: depth + 1,
                         impactViewModel: impactViewModel,
+                        selectedImpactId: selectedImpactId,
                         badge: badges[file.id],
                         expandedFileIds: $expandedFileIds,
-                        onSelectFile: onSelectFile
+                        onSelectFile: onSelectFile,
+                        onSelectImpact: onSelectImpact
                     )
                 }
 
@@ -835,8 +867,10 @@ struct FileTreeNodeView: View {
                         expandedFileIds: $expandedFileIds,
                         compactTree: compactTree,
                         impactViewModel: impactViewModel,
+                        selectedImpactId: selectedImpactId,
                         badges: badges,
-                        onSelectFile: onSelectFile
+                        onSelectFile: onSelectFile,
+                        onSelectImpact: onSelectImpact
                     )
                 }
             }
@@ -850,9 +884,11 @@ struct FileListItem: View {
     let isActive: Bool
     var depth: Int = 0
     let impactViewModel: ImpactGraphViewModel
+    let selectedImpactId: UUID?
     let badge: ReviewFileTreeBadge?
     @Binding var expandedFileIds: Set<UUID>
     let onSelectFile: (ChangedFile) -> Void
+    let onSelectImpact: (SymbolImpact) -> Void
 
     var fileTargets: [ReviewTarget] {
         viewModel.bucketTargets.filter { $0.filePath == file.path }
@@ -958,11 +994,8 @@ struct FileListItem: View {
                     SymbolListItemRow(
                         impact: impact,
                         depth: depth + 1,
-                        onTap: {
-                            impactViewModel.select(impact)
-                            viewModel.isImpactInspectorVisible = true
-                            viewModel.jumpToImpactRoot(impact)
-                        }
+                        isSelected: selectedImpactId == impact.id,
+                        onTap: { onSelectImpact(impact) }
                     )
                 }
             }
@@ -993,6 +1026,7 @@ struct FileListItem: View {
 struct SymbolListItemRow: View {
     let impact: SymbolImpact
     let depth: Int
+    let isSelected: Bool
     let onTap: () -> Void
 
     var body: some View {
@@ -1001,11 +1035,11 @@ struct SymbolListItemRow: View {
 
             Image(systemName: iconName)
                 .font(.system(size: 10))
-                .foregroundColor(iconColor)
+                .foregroundColor(isSelected ? impact.summary.impactLevel.tintColor : iconColor)
 
             Text(impact.symbol.name)
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.textSecondary)
+                .foregroundColor(isSelected ? .textPrimary : .textSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
@@ -1022,6 +1056,12 @@ struct SymbolListItemRow: View {
         .padding(.leading, CGFloat(min(depth, 5)) * 12 + 10)
         .padding(.trailing, 8)
         .padding(.vertical, 3.5)
+        .background(isSelected ? impact.summary.impactLevel.tintColor.opacity(0.10) : Color.clear)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(isSelected ? impact.summary.impactLevel.tintColor : Color.clear)
+                .frame(width: 3)
+        }
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
     }
@@ -1094,9 +1134,12 @@ struct DiffContent: View {
     let impactViewModel: ImpactGraphViewModel
     let impactFilter: ReviewImpactFilter
     let selectedMarkerId: UUID?
+    let expandedImpactIds: Set<UUID>
     let activeHunkIndex: Int?
     let activeTarget: ReviewTarget?
+    let onCopyFile: () -> Void
     let onOpenImpact: (SymbolImpact) -> Void
+    let onToggleImpactExpansion: (SymbolImpact) -> Void
 
     var fileImpacts: [SymbolImpact] {
         let all = impactViewModel.visibleImpacts(for: file)
@@ -1217,10 +1260,17 @@ struct DiffContent: View {
                         .help("Change diff layout")
 
                         DiffToolbarButton(
+                            systemImage: "doc.on.doc",
+                            help: "Copy file context"
+                        ) {
+                            onCopyFile()
+                        }
+
+                        DiffToolbarButton(
                             systemImage: "point.3.connected.trianglepath.dotted",
                             isActive: viewModel.isImpactInspectorVisible,
                             help: viewModel.isImpactInspectorVisible
-                                ? "Hide Impact Explorer" : "Show Impact Explorer"
+                                ? "Hide Impact" : "Show Impact"
                         ) {
                             viewModel.isImpactInspectorVisible.toggle()
                         }
@@ -1249,10 +1299,12 @@ struct DiffContent: View {
                             markers: hunkMarkers(hunk, index: idx),
                             impactViewModel: impactViewModel,
                             selectedMarkerId: selectedMarkerId,
+                            expandedImpactIds: expandedImpactIds,
                             isHighlighted: activeHunkIndex == idx,
                             activeTarget: activeTarget,
                             activeImpactRange: activeImpactRange,
-                            onOpenImpact: onOpenImpact
+                            onOpenImpact: onOpenImpact,
+                            onToggleImpactExpansion: onToggleImpactExpansion
                         )
                         .id("hunk-\(file.id)-\(idx)")
                     }
@@ -1315,14 +1367,16 @@ struct InlineImpactSummaryCard: View {
     let impact: SymbolImpact
     let marker: InlineImpactMarker?
     let impactViewModel: ImpactGraphViewModel?
+    let isSelected: Bool
     let isExpanded: Bool
     let onOpenImpact: (SymbolImpact) -> Void
+    let onToggleExpanded: (SymbolImpact) -> Void
 
     var body: some View {
         HStack(alignment: isExpanded ? .top : .center, spacing: 10) {
             Rectangle()
                 .fill(impact.summary.impactLevel.tintColor)
-                .frame(width: 3)
+                .frame(width: impact.summary.impactLevel == .high ? 3 : 2)
                 .clipShape(Capsule())
 
             if isExpanded {
@@ -1331,53 +1385,84 @@ struct InlineImpactSummaryCard: View {
                 compactContent
             }
         }
-        .padding(isExpanded ? 9 : 7)
-        .background(Color(NSColor.controlColor).opacity(isExpanded ? 0.30 : 0.18))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.borderMuted, lineWidth: 0.5))
+        .padding(.horizontal, isExpanded ? 9 : 7)
+        .padding(.vertical, isExpanded ? 8 : 4)
+        .background(Color(NSColor.controlColor).opacity(isExpanded ? 0.28 : 0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(
+                    isSelected
+                        ? impact.summary.impactLevel.tintColor.opacity(0.55) : Color.borderMuted,
+                    lineWidth: isSelected ? 1 : 0.5)
+        )
     }
 
     private var compactContent: some View {
-        HStack(spacing: 7) {
-            Text("\(impact.summary.impactLevel.displayName) impact")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(impact.summary.impactLevel.tintColor)
-            Text(reasonOrOwnership)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.textSecondary)
-                .lineLimit(1)
-            Text(metricsText)
-                .font(.system(size: 11))
-                .foregroundColor(.textTertiary)
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            Button("View impact") {
-                onOpenImpact(impact)
+        Button {
+            onOpenImpact(impact)
+        } label: {
+            HStack(spacing: 6) {
+                CompactImpactChip(
+                    text: "\(impact.summary.impactLevel.displayName) impact",
+                    color: impact.summary.impactLevel.tintColor,
+                    isProminent: impact.summary.impactLevel == .high)
+                if impact.summary.directCallerCount > 0 {
+                    CompactImpactChip(
+                        text: "\(impact.summary.directCallerCount) callers",
+                        color: .textSecondary)
+                }
+                if impact.summary.fileCount > 1 {
+                    CompactImpactChip(
+                        text: "\(impact.summary.fileCount) files",
+                        color: .textSecondary)
+                }
+                if impact.summary.testReferenceCount == 0 && impact.hasImpactData {
+                    CompactImpactChip(text: "No tests", color: .warning)
+                }
+                Spacer(minLength: 8)
+                Button {
+                    onToggleExpanded(impact)
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Expand inline impact detail")
             }
-            .font(.system(size: 11, weight: .semibold))
-            .buttonStyle(.plain)
-            .foregroundColor(.brandAccent)
         }
+        .buttonStyle(.plain)
+        .help(expandedHelp)
     }
 
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 BadgeView(
-                    text: marker?.isContinuation == true
-                        ? "Impact continued"
-                        : "\(impact.summary.impactLevel.displayName) impact",
+                    text: "\(impact.summary.impactLevel.displayName) impact",
                     variant: impact.summary.impactLevel.badgeVariant)
                 Text(impact.symbol.name)
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundColor(.textPrimary)
                 Spacer()
-                Button("View impact") {
+                Button {
                     onOpenImpact(impact)
+                } label: {
+                    Label("Open", systemImage: "sidebar.right")
                 }
                 .font(.system(size: 11, weight: .semibold))
                 .buttonStyle(.plain)
                 .foregroundColor(.brandAccent)
+                Button {
+                    onToggleExpanded(impact)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Collapse inline impact detail")
             }
 
             if let reason = meaningfulReason {
@@ -1401,14 +1486,18 @@ struct InlineImpactSummaryCard: View {
 
     init(
         impact: SymbolImpact, marker: InlineImpactMarker? = nil,
-        impactViewModel: ImpactGraphViewModel? = nil, isExpanded: Bool = false,
-        onOpenImpact: @escaping (SymbolImpact) -> Void = { _ in }
+        impactViewModel: ImpactGraphViewModel? = nil, isSelected: Bool = false,
+        isExpanded: Bool = false,
+        onOpenImpact: @escaping (SymbolImpact) -> Void = { _ in },
+        onToggleExpanded: @escaping (SymbolImpact) -> Void = { _ in }
     ) {
         self.impact = impact
         self.marker = marker
         self.impactViewModel = impactViewModel
+        self.isSelected = isSelected
         self.isExpanded = isExpanded
         self.onOpenImpact = onOpenImpact
+        self.onToggleExpanded = onToggleExpanded
     }
 
     private var meaningfulReason: String? {
@@ -1432,9 +1521,36 @@ struct InlineImpactSummaryCard: View {
         }
         .joined(separator: ", ")
     }
+
+    private var expandedHelp: String {
+        [
+            reasonOrOwnership,
+            metricsText,
+            mostAffected.isEmpty ? nil : "Most affected: \(mostAffected)",
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n")
+    }
+}
+
+struct CompactImpactChip: View {
+    let text: String
+    let color: Color
+    var isProminent = false
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: isProminent ? .bold : .semibold))
+            .foregroundColor(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(color.opacity(isProminent ? 0.14 : 0.08))
+            .clipShape(Capsule())
+    }
 }
 
 struct ImpactExplorerSidebar: View {
+    @Bindable var reviewViewModel: ReviewModeViewModel
     @Bindable var impactViewModel: ImpactGraphViewModel
     let details: AnalysisDetails
     let onClose: () -> Void
@@ -1447,7 +1563,7 @@ struct ImpactExplorerSidebar: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(
                         impactViewModel.focusedNode?.title ?? impactViewModel.originImpact?.symbol
-                            .name ?? "Impact Explorer"
+                            .name ?? "Impact"
                     )
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.textPrimary)
@@ -1522,7 +1638,7 @@ struct ImpactExplorerSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(.textSecondary)
-                .help("Collapse Impact Explorer")
+                .help("Collapse Impact")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -1538,6 +1654,7 @@ struct ImpactExplorerSidebar: View {
                         ImpactExplorerRootCard(
                             impact: impactViewModel.originImpact ?? impactViewModel.reviewQueue[0],
                             viewModel: impactViewModel,
+                            reviewViewModel: reviewViewModel,
                             onOpenRoot: {
                                 if let impact = impactViewModel.originImpact {
                                     onOpenImpact(impact)
@@ -1552,8 +1669,6 @@ struct ImpactExplorerSidebar: View {
 
                         Divider()
                             .opacity(0.6)
-
-                        ImpactSourcePreviewPanel(viewModel: impactViewModel)
                     }
                     .padding(12)
                 }
@@ -1580,123 +1695,6 @@ struct ImpactExplorerSidebar: View {
     }
 }
 
-struct ImpactSourcePreviewPanel: View {
-    @Bindable var viewModel: ImpactGraphViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Header
-            HStack {
-                Label("Source Context", systemImage: "doc.text.magnifyingglass")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.textSecondary)
-
-                Spacer()
-
-                if let node = viewModel.selectedGraphNode {
-                    Text(node.isChangedInPR ? "Changed" : "Read-only")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(node.isChangedInPR ? .success : .textTertiary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 0.5)
-                        .background(
-                            node.isChangedInPR ? Color.success.opacity(0.12) : Color.bgSidebarPanel
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                }
-            }
-            .padding(.horizontal, 2)
-
-            if viewModel.isLoadingSourceCode {
-                HStack(spacing: 8) {
-                    LoadingSpinner(size: 12)
-                    Text("Loading source context...")
-                        .font(.system(size: 11))
-                        .foregroundColor(.textSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 20)
-                .background(Color.bgSidebarPanel.opacity(0.4))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6).stroke(Color.borderMuted, lineWidth: 0.5))
-            } else if let error = viewModel.sourceCodeError {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Failed to load context")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.danger)
-                    Text(error)
-                        .font(.system(size: 10))
-                        .foregroundColor(.textSecondary)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.dangerBg.opacity(0.3))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6).stroke(
-                        Color.danger.opacity(0.3), lineWidth: 0.5))
-            } else if !viewModel.selectedSourceLines.isEmpty {
-                VStack(spacing: 0) {
-                    // Code viewer box
-                    VStack(alignment: .leading, spacing: 1) {
-                        ForEach(viewModel.selectedSourceLines) { line in
-                            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                // Line Number
-                                Text("\(line.lineNumber)")
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundColor(.textTertiary)
-                                    .frame(width: 24, alignment: .trailing)
-                                    .padding(.trailing, 2)
-
-                                // Line Content
-                                Text(line.text)
-                                    .font(.appMonospaced(10))
-                                    .foregroundColor(
-                                        line.isHighlighted ? .textPrimary : .textSecondary
-                                    )
-                                    .lineLimit(1)
-                                    .textSelection(.enabled)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 1)
-                            .padding(.horizontal, 4)
-                            .background(
-                                line.isHighlighted ? Color.brandAccent.opacity(0.12) : Color.clear)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                    .background(Color(NSColor.underPageBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6).stroke(Color.borderMuted, lineWidth: 0.5))
-
-                    if let node = viewModel.selectedGraphNode {
-                        Text(node.filePath)
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundColor(.textTertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .padding(.top, 4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .help(node.filePath)
-                    }
-                }
-            } else {
-                Text("Select a node to preview source context.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 20)
-                    .background(Color.bgSidebarPanel.opacity(0.2))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6).stroke(Color.borderMuted, lineWidth: 0.5))
-            }
-        }
-    }
-}
-
 struct ImpactExplorerEmptyState: View {
     var body: some View {
         VStack(spacing: 8) {
@@ -1720,6 +1718,7 @@ struct ImpactExplorerEmptyState: View {
 struct ImpactExplorerRootCard: View {
     let impact: SymbolImpact
     @Bindable var viewModel: ImpactGraphViewModel
+    @Bindable var reviewViewModel: ReviewModeViewModel
     let onOpenRoot: () -> Void
 
     var body: some View {
@@ -1794,6 +1793,14 @@ struct ImpactExplorerRootCard: View {
                 HStack(spacing: 6) {
                     Button(action: onOpenRoot) {
                         Label("Open Root", systemImage: "target")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button {
+                        reviewViewModel.copyImpactContext(impact)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -2253,10 +2260,12 @@ struct HunkView: View {
     let markers: [InlineImpactMarker]
     let impactViewModel: ImpactGraphViewModel
     let selectedMarkerId: UUID?
+    let expandedImpactIds: Set<UUID>
     let isHighlighted: Bool
     let activeTarget: ReviewTarget?
     let activeImpactRange: ClosedRange<Int>?
     let onOpenImpact: (SymbolImpact) -> Void
+    let onToggleImpactExpansion: (SymbolImpact) -> Void
     @State private var isCollapsed = false
 
     var diffLines: [NumberedDiffLine] {
@@ -2632,9 +2641,10 @@ struct HunkView: View {
                                 impact: impact,
                                 marker: marker,
                                 impactViewModel: impactViewModel,
-                                isExpanded: marker.rootSymbolId == selectedMarkerId
-                                    || impact.summary.impactLevel == .high,
-                                onOpenImpact: onOpenImpact)
+                                isSelected: marker.rootSymbolId == selectedMarkerId,
+                                isExpanded: expandedImpactIds.contains(impact.id),
+                                onOpenImpact: onOpenImpact,
+                                onToggleExpanded: onToggleImpactExpansion)
                         }
                     }
                 }

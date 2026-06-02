@@ -20,9 +20,6 @@
     "#%lld" : {
 
     },
-    "%@ impact" : {
-
-    },
     "%@%@" : {
       "localizations" : {
         "en" : {
@@ -566,9 +563,6 @@
     "Change diff layout" : {
 
     },
-    "Changed" : {
-
-    },
     "Changed Files" : {
 
     },
@@ -700,7 +694,10 @@
     "Cleared!" : {
 
     },
-    "Collapse Impact Explorer" : {
+    "Collapse Impact" : {
+
+    },
+    "Collapse inline impact detail" : {
 
     },
     "Commit filter" : {
@@ -719,6 +716,12 @@
 
     },
     "Copy logs to clipboard" : {
+
+    },
+    "Copy review plan" : {
+
+    },
+    "Copy Review Plan" : {
 
     },
     "Debug" : {
@@ -788,7 +791,7 @@
     "Expand context up (20 lines)" : {
 
     },
-    "Failed to load context" : {
+    "Expand inline impact detail" : {
 
     },
     "File filters" : {
@@ -797,7 +800,7 @@
     "Filter changed files" : {
 
     },
-    "Filter files by AST impact level" : {
+    "Filter files by impact level" : {
 
     },
     "Filter files..." : {
@@ -941,12 +944,6 @@
         }
       }
     },
-    "Loading source context..." : {
-
-    },
-    "Lower-Signal Changes" : {
-
-    },
     "main, HEAD~3, a1b2c3d" : {
 
     },
@@ -1061,6 +1058,9 @@
     "No workspaces registered" : {
 
     },
+    "Open" : {
+
+    },
     "Open in Finder" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1143,9 +1143,6 @@
       }
     },
     "Privacy" : {
-
-    },
-    "Read-only" : {
 
     },
     "Read-only local context" : {
@@ -1371,6 +1368,9 @@
         }
       }
     },
+    "Safe to Skim" : {
+
+    },
     "seconds" : {
 
     },
@@ -1399,9 +1399,6 @@
           }
         }
       }
-    },
-    "Select a node to preview source context." : {
-
     },
     "Select a workspace or branch to load analysis." : {
       "extractionState" : "manual",
@@ -1505,9 +1502,6 @@
 
     },
     "Show every folder level" : {
-
-    },
-    "Source Context" : {
 
     },
     "Split" : {
@@ -1732,9 +1726,6 @@
 
     },
     "View diff" : {
-
-    },
-    "View impact" : {
 
     },
     "Welcome to chobi" : {

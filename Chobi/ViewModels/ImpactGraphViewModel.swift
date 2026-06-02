@@ -9,19 +9,13 @@ class ImpactGraphViewModel {
     var selectedSymbolId: UUID? = nil
     var changedOnly: Bool = true
     var graphDepth: Int = 1
-    var graphDirection: ImpactGraphDirection = .both
+    var graphDirection: ImpactGraphDirection = .callers
     var originImpactId: UUID? = nil
     var focusedNodeId: String? = nil
     var selectedGraphNodeId: String? = nil
     private(set) var focusBackStack: [String] = []
     private(set) var focusForwardStack: [String] = []
     private(set) var selectedSourceContext: SymbolSourceContext? = nil
-
-    var repoPath: String? = nil
-    var selectedSourceLines: [SourceCodeLine] = []
-    var isLoadingSourceCode: Bool = false
-    var sourceCodeError: String? = nil
-    var showFullFile: Bool = false
 
     private(set) var impacts: [SymbolImpact] = []
     private(set) var visibleImpactsByFileId: [UUID: [SymbolImpact]] = [:]
@@ -122,7 +116,7 @@ class ImpactGraphViewModel {
                 line: origin.symbol.startLine,
                 role: .origin,
                 isChangedInPR: true,
-                isTest: origin.filePath.isTestPath)
+                isTest: origin.symbol.metadata["is_test"] == "true")
         ]
 
         let graphRootId = nodeId(for: graphRoot.symbol.name, filePath: graphRoot.filePath)
@@ -135,7 +129,7 @@ class ImpactGraphViewModel {
                     line: graphRoot.symbol.startLine,
                     role: .origin,
                     isChangedInPR: true,
-                    isTest: graphRoot.filePath.isTestPath))
+                    isTest: graphRoot.symbol.metadata["is_test"] == "true"))
         }
 
         if graphDirection == .callers || graphDirection == .both {
@@ -199,8 +193,7 @@ class ImpactGraphViewModel {
         return "No caller or callee data found for changed symbols."
     }
 
-    func load(details: AnalysisDetails, repoPath: String? = nil) {
-        self.repoPath = repoPath
+    func load(details: AnalysisDetails) {
         sourceSymbolCount = details.symbols.count
         let filesById = Dictionary(uniqueKeysWithValues: details.files.map { ($0.id, $0.path) })
         impacts =
@@ -305,6 +298,7 @@ class ImpactGraphViewModel {
                 let end = candidate.newStart + max(candidate.newLines - 1, 0)
                 return impact.symbol.startLine <= end && impact.symbol.endLine >= candidate.newStart
             }
+            guard firstHunkIndex == nil || firstHunkIndex == hunkIndex else { return nil }
             return InlineImpactMarker(
                 id: UUID(),
                 rootSymbolId: impact.id,
@@ -312,8 +306,7 @@ class ImpactGraphViewModel {
                 anchorLine: anchor,
                 hunkIndex: hunkIndex,
                 summary: usefulSummary(for: impact),
-                metrics: impact.summary,
-                isContinuation: firstHunkIndex != nil && firstHunkIndex != hunkIndex)
+                metrics: impact.summary)
         }
     }
 
@@ -384,7 +377,6 @@ class ImpactGraphViewModel {
     private func updateSelectedSourceContext() {
         guard let node = selectedGraphNode else {
             selectedSourceContext = nil
-            loadSourceCodeForSelectedNode()
             return
         }
         let start = node.line ?? 1
@@ -395,111 +387,10 @@ class ImpactGraphViewModel {
             startLine: start,
             endLine: end,
             excerptStartLine: max(1, start - 3),
-            excerpt: makeExcerpt(for: node),
+            excerpt: "",
             isChangedInCurrentPR: node.isChangedInPR,
             changedLineNumbers: node.isChangedInPR ? Set(start...max(start, end)) : [],
             callSiteLine: node.role == .origin ? nil : node.line)
-        loadSourceCodeForSelectedNode()
-    }
-
-    func loadSourceCodeForSelectedNode() {
-        guard let node = selectedGraphNode else {
-            self.selectedSourceLines = []
-            self.isLoadingSourceCode = false
-            self.sourceCodeError = nil
-            return
-        }
-
-        guard let repoPath = self.repoPath, !repoPath.isEmpty else {
-            self.selectedSourceLines = []
-            self.isLoadingSourceCode = false
-            self.sourceCodeError = "Workspace repository path is not available."
-            return
-        }
-
-        let filePath = node.filePath
-        let highlightLine = node.line
-        let isOrigin = node.role == .origin
-
-        self.isLoadingSourceCode = true
-        self.sourceCodeError = nil
-
-        Task {
-            do {
-                let fileURL = URL(
-                    fileURLWithPath: filePath, relativeTo: URL(fileURLWithPath: repoPath)
-                ).standardized
-                var fileContent = ""
-
-                // Read from local workspace file if possible
-                if FileManager.default.fileExists(atPath: fileURL.path),
-                    let content = try? String(contentsOf: fileURL, encoding: .utf8)
-                {
-                    fileContent = content
-                } else {
-                    // Try to fall back to HEAD via git show
-                    let fallback = GitService.fileContent(at: "HEAD", path: filePath, cwd: repoPath)
-                    if !fallback.isEmpty {
-                        fileContent = fallback
-                    } else {
-                        throw NSError(
-                            domain: "ImpactExplorer", code: 404,
-                            userInfo: [NSLocalizedDescriptionKey: "File not found: \(filePath)"])
-                    }
-                }
-
-                let allLines = fileContent.components(separatedBy: .newlines)
-
-                var finalLines: [SourceCodeLine] = []
-
-                if showFullFile {
-                    // Load all lines
-                    finalLines = allLines.enumerated().map { index, lineText in
-                        let lineNum = index + 1
-                        let isHighlighted = highlightLine == lineNum
-                        return SourceCodeLine(
-                            lineNumber: lineNum, text: lineText, isHighlighted: isHighlighted)
-                    }
-                } else {
-                    // Context mode: show 8 lines before and 16 lines after
-                    let centerLine = highlightLine ?? (originImpact?.symbol.startLine ?? 1)
-                    let startLine = max(1, centerLine - 8)
-                    let endLine = min(allLines.count, centerLine + 16)
-
-                    if startLine <= endLine && !allLines.isEmpty {
-                        finalLines = (startLine...endLine).map { lineNum in
-                            let lineText = allLines[lineNum - 1]
-                            let isHighlighted: Bool
-                            if isOrigin, let origin = originImpact {
-                                isHighlighted =
-                                    lineNum >= origin.symbol.startLine
-                                    && lineNum <= origin.symbol.endLine
-                            } else {
-                                isHighlighted = highlightLine == lineNum
-                            }
-                            return SourceCodeLine(
-                                lineNumber: lineNum, text: lineText, isHighlighted: isHighlighted)
-                        }
-                    }
-                }
-
-                self.selectedSourceLines = finalLines
-                self.isLoadingSourceCode = false
-            } catch {
-                self.selectedSourceLines = []
-                self.sourceCodeError = error.localizedDescription
-                self.isLoadingSourceCode = false
-            }
-        }
-    }
-
-    private func makeExcerpt(for node: ImpactGraphNode) -> String {
-        if node.isChangedInPR, let impact = originImpact {
-            return
-                "\(impact.symbol.kind.rawValue) \(impact.symbol.name)\n// Changed lines L\(impact.symbol.startLine)-L\(impact.symbol.endLine)"
-        }
-        let lineText = node.line.map { " at L\($0)" } ?? ""
-        return "// Read-only source context\(lineText)\n\(node.title)"
     }
 
     func impacts(for hunk: DiffHunk, fileId: UUID) -> [SymbolImpact] {
@@ -553,18 +444,14 @@ class ImpactGraphViewModel {
                 caller.components(separatedBy: ":").first ?? caller
             })
         let relatedFileCount = max(1, callerFiles.union([filePath]).count)
-        let testReferenceCount = symbol.callers.filter { caller in
-            caller.localizedCaseInsensitiveContains("test")
-                || caller.localizedCaseInsensitiveContains("spec")
-        }.count
+        let testReferenceCount = symbol.callers.filter(isChangedTestCaller).count
         let directCallerCount = symbol.callers.count
         let directCalleeCount = symbol.callees.count
-        let impactLevel = scoreImpact(
-            directCallerCount: directCallerCount,
-            directCalleeCount: directCalleeCount,
+        let impactLevel = ImpactScorer.level(
+            for: symbol,
             fileCount: relatedFileCount,
-            testReferenceCount: testReferenceCount,
-            symbol: symbol
+            transitiveCallerCount: directCallerCount,
+            transitiveCalleeCount: directCalleeCount
         )
         let confidence: CallGraphConfidence =
             symbol.metadata["caller_resolution"] == "indexed" || !symbol.callees.isEmpty
@@ -583,7 +470,7 @@ class ImpactGraphViewModel {
     }
 
     private func makeReason(symbol: ChangedSymbol, filePath: String) -> String? {
-        if filePath.isTestPath && !symbol.callees.isEmpty {
+        if symbol.metadata["is_test"] == "true" && !symbol.callees.isEmpty {
             return
                 "Test behavior changes while exercising \(symbol.callees.prefix(2).joined(separator: ", "))."
         }
@@ -595,7 +482,7 @@ class ImpactGraphViewModel {
             return
                 "High fan-in utility changed across \(Set(symbol.callers.map(pathPrefix)).count) files."
         }
-        if symbol.callers.contains(where: { $0.isTestPath }) && symbol.callers.count > 1 {
+        if symbol.callers.contains(where: isChangedTestCaller) && symbol.callers.count > 1 {
             return "Production change has direct test references and runtime callers."
         }
         return nil
@@ -603,25 +490,6 @@ class ImpactGraphViewModel {
 
     private func topAffectedSymbols(symbol: ChangedSymbol) -> [String] {
         Array(symbol.callers.prefix(3).map(displayName))
-    }
-
-    private func scoreImpact(
-        directCallerCount: Int,
-        directCalleeCount: Int,
-        fileCount: Int,
-        testReferenceCount: Int,
-        symbol: ChangedSymbol
-    ) -> ImpactLevel {
-        var score = directCallerCount * 2 + directCalleeCount + fileCount
-        if symbol.metadata["visibility"] == "public" || symbol.metadata["is_public"] == "true" {
-            score += 4
-        }
-        if testReferenceCount == 0 && directCallerCount > 0 {
-            score += 2
-        }
-        if score >= 14 { return .high }
-        if score >= 6 { return .medium }
-        return .low
     }
 
     private func impactSortScore(_ impact: SymbolImpact) -> Int {
@@ -645,7 +513,7 @@ class ImpactGraphViewModel {
             isChangedInPR: impacts.contains {
                 $0.symbol.name == displayName(row) || $0.qualifiedName == displayName(row)
             },
-            isTest: row.isTestPath)
+            isTest: isChangedTestCaller(row))
     }
 
     private func nodeId(for name: String, filePath: String) -> String {
@@ -663,6 +531,14 @@ class ImpactGraphViewModel {
     private func lineNumber(_ row: String) -> Int? {
         let parts = row.components(separatedBy: ":")
         return parts.compactMap(Int.init).first
+    }
+
+    private func isChangedTestCaller(_ row: String) -> Bool {
+        let name = displayName(row)
+        return impacts.contains { impact in
+            (impact.symbol.name == name || impact.qualifiedName == name)
+                && impact.symbol.metadata["is_test"] == "true"
+        }
     }
 }
 
@@ -683,17 +559,4 @@ struct FileImpactIndicator: Hashable {
     var helpText: String {
         "\(count) impact signal\(count == 1 ? "" : "s")\n\(callerCount) callers of changed symbols\n\(changedHighImpactCount) changed high-impact symbols\n\(weakTestCount) weak test coverage signals"
     }
-}
-
-extension String {
-    fileprivate var isTestPath: Bool {
-        localizedCaseInsensitiveContains("test") || localizedCaseInsensitiveContains("spec")
-    }
-}
-
-struct SourceCodeLine: Identifiable, Hashable {
-    let id = UUID()
-    let lineNumber: Int
-    let text: String
-    let isHighlighted: Bool
 }

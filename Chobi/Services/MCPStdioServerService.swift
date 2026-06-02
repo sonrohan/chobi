@@ -111,16 +111,14 @@ extension AppState {
         selectedRepoId = repositories.first?.id
         pullRequests = await persistence.allPullRequests()
 
-        guard let repo = selectedRepo else { return }
+        guard selectedRepo != nil else { return }
         let latestRun =
             pullRequests
             .compactMap(\.latestRun)
             .sorted { $0.createdAt > $1.createdAt }
             .first
         if let run = latestRun {
-            let profile = AnalysisProfileStore.load(repoPath: repo.path)
-            analysisDetails = await persistence.getAnalysisDetails(
-                runId: run.id, profile: profile)
+            analysisDetails = await persistence.getAnalysisDetails(runId: run.id)
         }
     }
 }

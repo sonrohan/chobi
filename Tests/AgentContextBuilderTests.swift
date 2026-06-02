@@ -64,7 +64,6 @@ final class AgentContextBuilderTests: XCTestCase {
         let context = AgentContextBuilder.build(
             details: details,
             repository: repo,
-            profile: .generic,
             options: AgentContextOptions(
                 detailLevel: .standard, includeFiles: true, includeSymbols: false, maxItems: 1)
         )

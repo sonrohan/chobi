@@ -35,7 +35,6 @@ enum AgentContextErrorCode: String, Codable, Sendable {
     case symbolNotFound = "symbol_not_found"
     case lineRangeTooLarge = "line_range_too_large"
     case pathOutsideWorkspace = "path_outside_workspace"
-    case profileNotFound = "profile_not_found"
     case unsupportedQuery = "unsupported_query"
     case invalidArguments = "invalid_arguments"
     case invalidToken = "invalid_token"

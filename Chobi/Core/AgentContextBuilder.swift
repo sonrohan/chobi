@@ -198,16 +198,13 @@ enum AgentContextBuilder {
             let parts = raw.components(separatedBy: ":")
             let callerPath = parts.count >= 2 ? parts[0] : raw
             let callerName = parts.count >= 2 ? parts.dropFirst().joined(separator: ":") : raw
-            let isTest =
-                callerPath.lowercased().contains("test")
-                || callerPath.lowercased().contains("spec")
             return MCPGraphNode(
                 id: "caller-\(idx)",
                 name: callerName,
                 filePath: callerPath,
                 line: nil,
                 isChangedInPR: changedFilePaths.contains(callerPath),
-                isTest: isTest,
+                isTest: false,
                 definitionRange: nil
             )
         }
@@ -229,15 +226,12 @@ enum AgentContextBuilder {
         let uniqueCallerFiles = Set(callerNodes.map(\.filePath)).filter { !$0.isEmpty }
         let totalFileCount = uniqueCallerFiles.union(filePath.map { [$0] } ?? []).count
 
-        let impactLevel: ImpactLevel
-        let total = callerNodes.count + calleeNodes.count
-        if total >= 10 || callerNodes.count >= 6 {
-            impactLevel = .high
-        } else if total >= 4 || callerNodes.count >= 2 {
-            impactLevel = .medium
-        } else {
-            impactLevel = .low
-        }
+        let impactLevel = ImpactScorer.level(
+            for: symbol,
+            fileCount: totalFileCount,
+            transitiveCallerCount: callerNodes.count,
+            transitiveCalleeCount: calleeNodes.count
+        )
 
         let summary = MCPImpactSummary(
             directCallerCount: callerNodes.count,
@@ -301,15 +295,12 @@ enum AgentContextBuilder {
 
         let nodeFiles = Set((callerNodes + calleeNodes).map(\.filePath) + [filePath ?? ""])
             .filter { !$0.isEmpty }
-        let total = callerNodes.count + calleeNodes.count
-        let impactLevel: ImpactLevel
-        if total >= 10 || callerNodes.count >= 6 {
-            impactLevel = .high
-        } else if total >= 4 || callerNodes.count >= 2 {
-            impactLevel = .medium
-        } else {
-            impactLevel = .low
-        }
+        let impactLevel = ImpactScorer.level(
+            for: symbol,
+            fileCount: nodeFiles.count,
+            transitiveCallerCount: callerNodes.count,
+            transitiveCalleeCount: calleeNodes.count
+        )
         let confidence = graph.confidence.rawValue
         let summary = MCPImpactSummary(
             directCallerCount: callerNodes.count,
@@ -613,7 +604,7 @@ enum AgentContextBuilder {
         case "contracts":
             return text.contains("contract") || text.contains("api")
         case "tests":
-            return text.contains("test")
+            return target.source == "file-classifier"
         default:
             return true
         }

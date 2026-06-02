@@ -250,7 +250,7 @@ private struct SCIPGraphBuilder {
             ),
             definition: definition.location,
             isChangedInPR: isChangedInPR,
-            isTest: isTestPath(definition.location.filePath),
+            isTest: false,
             confidence: confidence
         )
     }
@@ -272,7 +272,7 @@ private struct SCIPGraphBuilder {
             definition: SymbolLocation(
                 filePath: path, startLine: 1, startColumn: nil, endLine: 1, endColumn: nil),
             isChangedInPR: changedPaths.contains(path),
-            isTest: isTestPath(path),
+            isTest: false,
             confidence: .medium
         )
     }
@@ -308,10 +308,6 @@ private struct SCIPGraphBuilder {
         abs(definition.location.startLine - symbol.startLine)
     }
 
-    nonisolated private func isTestPath(_ path: String) -> Bool {
-        let lower = path.lowercased()
-        return lower.contains("test") || lower.contains("spec")
-    }
 }
 
 private struct SCIPProtobufReader {

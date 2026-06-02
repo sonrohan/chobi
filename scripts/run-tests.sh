@@ -13,7 +13,7 @@ echo "Compiling swift files with optimizations (-O)..."
 swiftc -O -sdk $(xcrun --show-sdk-path --sdk macosx) -enable-bare-slash-regex \
     Chobi/Core/Models.swift \
     Chobi/Core/AnalysisEngine.swift \
-    Chobi/Core/AnalysisProfile.swift \
+    Chobi/Core/DeterministicReviewPolicy.swift \
     Tests/CIStressTest.swift \
     -o Tests/CIStressTestExecutable
 

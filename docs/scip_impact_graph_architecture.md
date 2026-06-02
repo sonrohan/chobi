@@ -365,7 +365,7 @@ Confidence rules:
 
 Initial implementation should consume existing indexes only.
 
-Later, add profile-driven index commands:
+Later, add explicit user-controlled index commands:
 
 ```json
 {
@@ -417,7 +417,6 @@ Generation commands must be opt-in because they may require dependencies, build 
 
 ### Phase 6: Optional Index Generation
 
-- Add profile configuration for index commands.
 - Add explicit user-controlled generation.
 - Cache by repository and revision.
 

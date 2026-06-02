@@ -70,6 +70,5 @@ final class MCPRequestRouterTests: XCTestCase {
         // Dropped tools should not appear
         XCTAssertFalse(names.contains("chobi.get_current_review_context"))
         XCTAssertFalse(names.contains("chobi.search_review_context"))
-        XCTAssertFalse(names.contains("chobi.get_profile_context"))
     }
 }

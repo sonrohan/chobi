@@ -37,7 +37,7 @@ We structure the source files by functional domain to keep the codebase highly n
 
 ```
 Chobi/
-├── Core/                        # Immutable models, engine, and analysis profiles
+├── Core/                        # Immutable models, deterministic engine, and review policy
 ├── Services/                    # Long-running services and global coordinator (AppState)
 ├── ViewModels/                  # Observables managing transient view states & actions
 ├── Views/                       # Clean declarative layouts

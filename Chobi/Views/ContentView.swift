@@ -59,6 +59,7 @@ struct AppHeaderView: View {
     @State private var isBranchPickerPresented = false
     @State private var isCommitPickerPresented = false
     @State private var commitVM: CommitScopeViewModel? = nil
+    @State private var reviewActionsViewModel = ReviewModeViewModel()
 
     @State private var isReloadHovered = false
 
@@ -297,6 +298,27 @@ struct AppHeaderView: View {
                         .onHover { isReloadHovered = $0 }
                         .help("Analyze latest")
                     }
+                    .background(Color(NSColor.controlColor).opacity(0.3))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.borderMuted, lineWidth: 0.5)
+                    )
+
+                    Button {
+                        if let details = state.analysisDetails {
+                            reviewActionsViewModel.copyFullReviewPlan(details: details)
+                        }
+                    } label: {
+                        Label("Copy Review Plan", systemImage: "doc.on.doc")
+                            .font(.system(size: 11))
+                            .foregroundColor(.textSecondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(state.analysisDetails == nil)
+                    .help("Copy review plan")
                     .background(Color(NSColor.controlColor).opacity(0.3))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(
@@ -1249,13 +1271,13 @@ struct AnalysisDetailView: View {
         }
         .background(Color.bgCanvas)
         .onAppear {
-            impactViewModel.load(details: details, repoPath: state.selectedRepo?.path)
+            impactViewModel.load(details: details)
         }
         .onChange(of: state.analysisDetails?.run.id) { _, _ in
             viewModel?.refreshIfNecessary()
         }
         .onChange(of: details.run.id) { _, _ in
-            impactViewModel.load(details: details, repoPath: state.selectedRepo?.path)
+            impactViewModel.load(details: details)
         }
     }
 }

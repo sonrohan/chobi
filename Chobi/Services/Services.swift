@@ -1184,7 +1184,7 @@ actor PersistenceService: ModelActor {
         try? modelContext.save()
     }
 
-    func getAnalysisDetails(runId: UUID, profile: AnalysisProfile) async -> AnalysisDetails? {
+    func getAnalysisDetails(runId: UUID) async -> AnalysisDetails? {
         let runIdConst = runId
 
         let runDescriptor = FetchDescriptor<AnalysisRunEntity>(
@@ -1285,8 +1285,7 @@ actor PersistenceService: ModelActor {
         }
 
         let triage = await TriageEngine.deriveTriage(
-            files: files, symbols: symbols, findings: findings, riskScore: run.riskScore,
-            profile: profile)
+            files: files, symbols: symbols, findings: findings, riskScore: run.riskScore)
 
         return AnalysisDetails(
             run: run, pr: pr, files: files, symbols: symbols, findings: findings,
@@ -1453,9 +1452,6 @@ class AnalysisCoordinator: ObservableObject {
         let startTotal = Date()
 
         do {
-            let profile = AnalysisProfileStore.load(repoPath: path)
-            AppLogger.shared.log("Loaded analysis profile: \(profile.displayName)", tag: "Pipeline")
-
             let startGit = Date()
             let gitInfo = try await git.gatherDiff(repoPath: path, baseRef: baseRef)
             metrics.gitGatherDiffTime = Date().timeIntervalSince(startGit)
@@ -1492,7 +1488,7 @@ class AnalysisCoordinator: ObservableObject {
 
             // Parse diff
             let startDiff = Date()
-            let parsedFiles = DiffParser.parse(gitInfo.diff, profile: profile)
+            let parsedFiles = DiffParser.parse(gitInfo.diff)
             metrics.diffParsingTime = Date().timeIntervalSince(startDiff)
             metrics.changedFilesCount = parsedFiles.count
             AppLogger.shared.log(
@@ -1552,7 +1548,7 @@ class AnalysisCoordinator: ObservableObject {
             let startRules = Date()
             AppLogger.shared.log("Executing deterministic rules engine...", tag: "Pipeline")
             let ruleResults = RulesEngine.runDeterministicRules(
-                files: parsedFiles, symbols: allSymbols, filePathMap: filePathMap, profile: profile
+                files: parsedFiles, symbols: allSymbols, filePathMap: filePathMap
             )
             var allFindings: [Finding] = []
             for (path, rulefindings) in ruleResults {
@@ -1579,7 +1575,7 @@ class AnalysisCoordinator: ObservableObject {
                             severity: $0.severity, category: $0.category, message: $0.message,
                             lineStart: $0.lineStart, lineEnd: $0.lineEnd, ruleSource: $0.ruleSource,
                             evidence: $0.evidence)
-                    }, profile: profile)
+                    })
             metrics.rulesEngineTime = Date().timeIntervalSince(startRules)
             AppLogger.shared.log(
                 "Rules engine complete. Found \(allFindings.count) findings. Risk score calculated: \(breakdown.score)",
@@ -1616,7 +1612,7 @@ class AnalysisCoordinator: ObservableObject {
 
     func getDetails(for runId: UUID, repoPath: String? = nil) async -> AnalysisDetails? {
         await persistence.getAnalysisDetails(
-            runId: runId, profile: AnalysisProfileStore.load(repoPath: repoPath))
+            runId: runId)
     }
 
     func allRepositories() async -> [GitRepository] {

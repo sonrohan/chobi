@@ -147,7 +147,7 @@ actor AgentContextQueryService {
         let filePath = fileById[symbol.changedFileId]?.path
 
         // Build a compact impact summary from caller/callee counts
-        let impactSummary = makeImpactSummary(for: symbol)
+        let impactSummary = makeImpactSummary(for: symbol, filePath: filePath)
 
         return AgentContextBuilder.buildSymbolDetail(
             symbol: symbol,
@@ -273,8 +273,7 @@ actor AgentContextQueryService {
         let snapshot = await MainActor.run { stateProvider.agentContextSnapshot() }
         if let runId {
             let repo = repository(forRunId: runId, snapshot: snapshot)
-            let profile = AnalysisProfileStore.load(repoPath: repo?.path)
-            guard let details = await persistence.getAnalysisDetails(runId: runId, profile: profile)
+            guard let details = await persistence.getAnalysisDetails(runId: runId)
             else {
                 throw AgentContextError(code: .runNotFound, message: "Analysis run was not found.")
             }
@@ -306,27 +305,18 @@ actor AgentContextQueryService {
             ?? selectedRepository(in: snapshot)
     }
 
-    private func makeImpactSummary(for symbol: ChangedSymbol) -> MCPImpactSummary {
-        let testRefCount = symbol.callers.filter {
-            $0.lowercased().contains("test") || $0.lowercased().contains("spec")
-        }.count
-        let total = symbol.callers.count + symbol.callees.count
-        let impactLevel: ImpactLevel
-        if total >= 10 || symbol.callers.count >= 6 {
-            impactLevel = .high
-        } else if total >= 4 || symbol.callers.count >= 2 {
-            impactLevel = .medium
-        } else {
-            impactLevel = .low
-        }
+    private func makeImpactSummary(for symbol: ChangedSymbol, filePath: String?) -> MCPImpactSummary
+    {
+        let callerFiles = Set(symbol.callers.compactMap { $0.components(separatedBy: ":").first })
+        let fileCount = max(1, callerFiles.union(filePath.map { [$0] } ?? []).count)
+        let impactLevel = ImpactScorer.level(for: symbol, fileCount: fileCount)
         return MCPImpactSummary(
             directCallerCount: symbol.callers.count,
             directCalleeCount: symbol.callees.count,
             transitiveCallerCount: symbol.callers.count,
             transitiveCalleeCount: symbol.callees.count,
-            fileCount: Set(symbol.callers.compactMap { $0.components(separatedBy: ":").first })
-                .count,
-            testReferenceCount: testRefCount,
+            fileCount: fileCount,
+            testReferenceCount: 0,
             impactLevel: impactLevel.rawValue,
             confidence: symbol.metadata["caller_resolution"] == "indexed" ? "high" : "low"
         )

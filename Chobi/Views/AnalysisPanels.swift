@@ -120,7 +120,7 @@ struct ReviewTargetsPanel: View {
         Panel {
             VStack(alignment: .leading, spacing: 10) {
                 SectionHeading(
-                    "Selected View Targets", icon: "shield.lefthalf.filled",
+                    "Current Review Queue", icon: "shield.lefthalf.filled",
                     meta: "\(targets.count) target\(targets.count == 1 ? "" : "s")")
 
                 if targets.isEmpty {
@@ -265,7 +265,7 @@ struct SafeToSkimPanel: View {
                         Image(systemName: "eye.slash")
                             .font(.system(size: 13))
                             .foregroundColor(.textSecondary)
-                        Text("Lower-Signal Changes")
+                        Text("Safe to Skim")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(.textPrimary)
                         Spacer()
@@ -537,7 +537,7 @@ struct ReviewDebugSheet: View {
                         )
                         Divider()
                         PerformanceStepRow(
-                            label: "AST Parse Changed Symbols",
+                            label: "Parse Changed Code Paths",
                             duration: metrics.astParseTime,
                             meta: "Extracted \(metrics.symbolsCount) symbols from changed files",
                             total: metrics.totalTime
@@ -551,7 +551,7 @@ struct ReviewDebugSheet: View {
                         )
                         Divider()
                         PerformanceStepRow(
-                            label: "Call Graph Indexing",
+                            label: "Callers & Dependencies Indexing",
                             duration: metrics.astCallGraphTime,
                             meta:
                                 "Indexed \(metrics.indexedFilesCount) / \(metrics.trackedFilesCount) matching tracked files",

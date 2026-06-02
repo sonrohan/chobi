@@ -106,8 +106,7 @@ final class LargeChangeProcessingTests: XCTestCase {
             files: files,
             symbols: symbols,
             findings: findings,
-            riskScore: 75,
-            profile: .generic
+            riskScore: 75
         )
 
         let duration = Date().timeIntervalSince(start)
@@ -150,7 +149,7 @@ final class LargeChangeProcessingTests: XCTestCase {
         let diffText = makeLargeDiff(fileCount: fileCount)
         let start = Date()
 
-        let parsedFiles = DiffParser.parse(diffText, profile: .generic)
+        let parsedFiles = DiffParser.parse(diffText)
         XCTAssertEqual(parsedFiles.count, fileCount)
 
         let files = parsedFiles.map { parsed -> ChangedFile in
@@ -174,8 +173,7 @@ final class LargeChangeProcessingTests: XCTestCase {
         let ruleFindingsByPath = RulesEngine.runDeterministicRules(
             files: parsedFiles,
             symbols: symbols,
-            filePathMap: filePathMap,
-            profile: .generic
+            filePathMap: filePathMap
         )
         let findings = ruleFindingsByPath.flatMap { path, findings -> [Finding] in
             guard let file = fileByPath[path] else { return [] }
@@ -199,8 +197,7 @@ final class LargeChangeProcessingTests: XCTestCase {
             files: files,
             symbols: symbols,
             findings: findings,
-            riskScore: 85,
-            profile: .generic
+            riskScore: 85
         )
         let duration = Date().timeIntervalSince(start)
 
