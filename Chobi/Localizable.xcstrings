@@ -20,6 +20,9 @@
     "#%lld" : {
 
     },
+    "%@ impact" : {
+
+    },
     "%@%@" : {
       "localizations" : {
         "en" : {
@@ -569,10 +572,13 @@
     "Changed Files" : {
 
     },
+    "Changed Root" : {
+
+    },
     "Changed symbols were found, but no caller or callee relationships were detected." : {
 
     },
-    "Chobi exposes analysis summaries, review plans, symbols, findings, and bounded file ranges. No mutation tools or network listener are registered." : {
+    "Chobi exposes analysis summaries, review plans, changed files, symbols, call-graph impact data, and bounded file ranges. No mutation tools, network listeners, or remote calls are registered." : {
 
     },
     "Choose a local Git repository to analyze." : {
@@ -867,6 +873,9 @@
     "Impact Summary" : {
 
     },
+    "Impact: %@" : {
+
+    },
     "L%lld" : {
 
     },
@@ -1081,6 +1090,9 @@
     "optional" : {
 
     },
+    "Outside scope" : {
+
+    },
     "Parses symbols and signatures locally using high-fidelity Tree-sitter AST parsers. No code is sent to external APIs." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1137,6 +1149,9 @@
 
     },
     "Read-only local context" : {
+
+    },
+    "Reason: %@" : {
 
     },
     "Reload" : {
@@ -1719,7 +1734,7 @@
     "View diff" : {
 
     },
-    "View graph" : {
+    "View impact" : {
 
     },
     "Welcome to chobi" : {
@@ -1746,6 +1761,9 @@
       }
     },
     "Welcome to Chobi" : {
+
+    },
+    "Why This Matters" : {
 
     },
     "Workspace Alias" : {

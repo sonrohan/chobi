@@ -179,8 +179,20 @@ enum AgentContextBuilder {
     nonisolated static func buildImpactGraph(
         symbol: ChangedSymbol,
         filePath: String?,
-        changedFilePaths: Set<String>
+        changedFilePaths: Set<String>,
+        graph: SymbolGraphResult? = nil
     ) -> MCPImpactGraph {
+        if let graph,
+            let structured = buildStructuredImpactGraph(
+                symbol: symbol,
+                filePath: filePath,
+                changedFilePaths: changedFilePaths,
+                graph: graph
+            )
+        {
+            return structured
+        }
+
         // Parse "filePath:qualifiedName" entries from callers
         let callerNodes: [MCPGraphNode] = symbol.callers.enumerated().map { idx, raw in
             let parts = raw.components(separatedBy: ":")
@@ -195,7 +207,8 @@ enum AgentContextBuilder {
                 filePath: callerPath,
                 line: nil,
                 isChangedInPR: changedFilePaths.contains(callerPath),
-                isTest: isTest
+                isTest: isTest,
+                definitionRange: nil
             )
         }
 
@@ -207,7 +220,8 @@ enum AgentContextBuilder {
                 filePath: filePath ?? "",
                 line: nil,
                 isChangedInPR: false,
-                isTest: false
+                isTest: false,
+                definitionRange: nil
             )
         }
 
@@ -248,7 +262,114 @@ enum AgentContextBuilder {
             callerNodes: callerNodes,
             calleeNodes: calleeNodes,
             unresolvedCalleeNames: [],
+            edges: [],
+            rootNode: nil,
+            graphSource: symbol.metadata["graph_source"]
+                ?? GraphEdgeSource.treeSitterFallback.rawValue,
+            confidence: summary.confidence,
             nextActions: ["chobi.explain_file", "chobi.read_file_range"]
+        )
+    }
+
+    nonisolated private static func buildStructuredImpactGraph(
+        symbol: ChangedSymbol,
+        filePath: String?,
+        changedFilePaths: Set<String>,
+        graph: SymbolGraphResult
+    ) -> MCPImpactGraph? {
+        let rootNode =
+            symbol.metadata["symbol_id"].flatMap { id in graph.nodes.first { $0.id == id } }
+            ?? graph.nodes.first {
+                $0.definition?.filePath == filePath
+                    && $0.definition?.overlaps(
+                        startLine: symbol.startLine, endLine: symbol.endLine) == true
+            }
+        guard let rootNode else { return nil }
+
+        let callerEdges = graph.edges.filter { $0.calleeId == rootNode.id }
+        let calleeEdges = graph.edges.filter { $0.callerId == rootNode.id }
+        let graphNodesById = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, $0) })
+        let callerNodes =
+            callerEdges
+            .compactMap { graphNodesById[$0.callerId] }
+            .map { mapGraphNode($0, changedFilePaths: changedFilePaths) }
+        let calleeNodes =
+            calleeEdges
+            .compactMap { graphNodesById[$0.calleeId] }
+            .map { mapGraphNode($0, changedFilePaths: changedFilePaths) }
+        let edges = (callerEdges + calleeEdges).map(mapGraphEdge)
+
+        let nodeFiles = Set((callerNodes + calleeNodes).map(\.filePath) + [filePath ?? ""])
+            .filter { !$0.isEmpty }
+        let total = callerNodes.count + calleeNodes.count
+        let impactLevel: ImpactLevel
+        if total >= 10 || callerNodes.count >= 6 {
+            impactLevel = .high
+        } else if total >= 4 || callerNodes.count >= 2 {
+            impactLevel = .medium
+        } else {
+            impactLevel = .low
+        }
+        let confidence = graph.confidence.rawValue
+        let summary = MCPImpactSummary(
+            directCallerCount: callerNodes.count,
+            directCalleeCount: calleeNodes.count,
+            transitiveCallerCount: callerNodes.count,
+            transitiveCalleeCount: calleeNodes.count,
+            fileCount: nodeFiles.count,
+            testReferenceCount: callerNodes.filter(\.isTest).count,
+            impactLevel: impactLevel.rawValue,
+            confidence: confidence
+        )
+
+        return MCPImpactGraph(
+            schemaVersion: schemaVersion,
+            source: "chobi",
+            symbolId: symbol.id.uuidString,
+            symbolName: rootNode.identity.displayName,
+            filePath: filePath,
+            startLine: symbol.startLine,
+            endLine: symbol.endLine,
+            summary: summary,
+            callerNodes: callerNodes,
+            calleeNodes: calleeNodes,
+            unresolvedCalleeNames: [],
+            edges: edges,
+            rootNode: mapGraphNode(rootNode, changedFilePaths: changedFilePaths),
+            graphSource: graph.source.rawValue,
+            confidence: confidence,
+            nextActions: ["chobi.explain_file", "chobi.read_file_range"]
+        )
+    }
+
+    nonisolated private static func mapGraphNode(
+        _ node: SymbolGraphNode,
+        changedFilePaths: Set<String>
+    ) -> MCPGraphNode {
+        let range = node.definition.map {
+            MCPLineRange(start: $0.startLine, end: $0.endLine)
+        }
+        let filePath = node.definition?.filePath ?? ""
+        return MCPGraphNode(
+            id: node.id,
+            name: node.identity.displayName,
+            filePath: filePath,
+            line: node.definition?.startLine,
+            isChangedInPR: node.isChangedInPR || changedFilePaths.contains(filePath),
+            isTest: node.isTest,
+            definitionRange: range
+        )
+    }
+
+    nonisolated private static func mapGraphEdge(_ edge: SymbolGraphEdge) -> MCPGraphEdge {
+        MCPGraphEdge(
+            id: edge.id,
+            callerId: edge.callerId,
+            calleeId: edge.calleeId,
+            callSiteRange: edge.callSite.map { MCPLineRange(start: $0.startLine, end: $0.endLine) },
+            callSitePath: edge.callSite?.filePath,
+            confidence: edge.confidence.rawValue,
+            source: edge.source.rawValue
         )
     }
 

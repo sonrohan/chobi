@@ -744,7 +744,7 @@ actor ASTAnalysisService {
         changedFiles: [ChangedFile]
     ) async -> (
         symbols: [ChangedSymbol], parseTime: Double, compareTime: Double, callGraphTime: Double,
-        trackedFilesCount: Int, indexedFilesCount: Int
+        trackedFilesCount: Int, indexedFilesCount: Int, graph: SymbolGraphResult
     ) {
         var parseTime: Double = 0.0
         var compareTime: Double = 0.0
@@ -819,8 +819,17 @@ actor ASTAnalysisService {
         }
 
         let startCallGraph = Date()
-        let callerResult = await symbolsWithCallerData(
-            repoPath: repoPath, symbols: allSymbols, revision: headRevision)
+        let symbolIndexService = await SymbolIndexService(provider: SCIPIndexProvider())
+        let impactGraphService = await ImpactGraphService(
+            symbolIndexService: symbolIndexService,
+            fallbackService: self
+        )
+        let callerResult = await impactGraphService.enrichSymbols(
+            repoPath: repoPath,
+            symbols: allSymbols,
+            files: changedFiles,
+            revision: headRevision
+        )
         callGraphTime = Date().timeIntervalSince(startCallGraph)
 
         return (
@@ -828,8 +837,9 @@ actor ASTAnalysisService {
             parseTime: parseTime,
             compareTime: compareTime,
             callGraphTime: callGraphTime,
-            trackedFilesCount: callerResult.trackedCount,
-            indexedFilesCount: callerResult.indexedCount
+            trackedFilesCount: callerResult.trackedFilesCount,
+            indexedFilesCount: callerResult.indexedFilesCount,
+            graph: callerResult.graph
         )
     }
 
@@ -909,6 +919,9 @@ actor PersistenceService: ModelActor {
             AnalysisRunEntity.self,
             ChangedFileEntity.self,
             ChangedSymbolEntity.self,
+            SymbolGraphNodeEntity.self,
+            SymbolGraphEdgeEntity.self,
+            SymbolIndexMetadataEntity.self,
             FindingEntity.self,
         ])
         let config = ModelConfiguration(isStoredInMemoryOnly: false)
@@ -1078,6 +1091,78 @@ actor PersistenceService: ModelActor {
             modelContext.insert(entity)
         }
         try? modelContext.save()
+    }
+
+    func insertSymbolGraph(
+        _ graph: SymbolGraphResult,
+        analysisRunId: UUID,
+        repoPath: String,
+        revision: String?
+    ) {
+        for node in graph.nodes {
+            modelContext.insert(SymbolGraphNodeEntity(analysisRunId: analysisRunId, node: node))
+        }
+        for edge in graph.edges {
+            modelContext.insert(SymbolGraphEdgeEntity(analysisRunId: analysisRunId, edge: edge))
+        }
+        let metadata = SymbolIndexMetadataEntity(
+            analysisRunId: analysisRunId,
+            repositoryKey: String(repoPath.hashValue),
+            revision: revision,
+            indexSource: graph.source.rawValue,
+            indexedDocumentCount: Set(graph.nodes.compactMap(\.definition?.filePath)).count,
+            diagnostics: graph.diagnostics,
+            fallbackReason: graph.source == .treeSitterFallback ? graph.diagnostics.first : nil
+        )
+        modelContext.insert(metadata)
+        try? modelContext.save()
+    }
+
+    func getSymbolGraph(runId: UUID) -> SymbolGraphResult? {
+        let runIdConst = runId
+        let nodeDescriptor = FetchDescriptor<SymbolGraphNodeEntity>(
+            predicate: #Predicate<SymbolGraphNodeEntity> { $0.analysisRunId == runIdConst }
+        )
+        let edgeDescriptor = FetchDescriptor<SymbolGraphEdgeEntity>(
+            predicate: #Predicate<SymbolGraphEdgeEntity> { $0.analysisRunId == runIdConst }
+        )
+        let metadataDescriptor = FetchDescriptor<SymbolIndexMetadataEntity>(
+            predicate: #Predicate<SymbolIndexMetadataEntity> { $0.analysisRunId == runIdConst },
+            sortBy: [SortDescriptor(\.graphBuildTimestamp, order: .reverse)]
+        )
+        let nodeEntities = (try? modelContext.fetch(nodeDescriptor)) ?? []
+        guard !nodeEntities.isEmpty else { return nil }
+        let edgeEntities = (try? modelContext.fetch(edgeDescriptor)) ?? []
+        let metadata = (try? modelContext.fetch(metadataDescriptor).first)
+
+        let nodes = nodeEntities.map { entity in
+            SymbolGraphNode(
+                id: entity.identity.id,
+                identity: entity.identity,
+                definition: entity.definition,
+                isChangedInPR: entity.isChangedInPR,
+                isTest: entity.isTest,
+                confidence: GraphConfidence(rawValue: entity.confidence) ?? .low
+            )
+        }
+        let edges = edgeEntities.map { entity in
+            SymbolGraphEdge(
+                id: entity.edgeId,
+                callerId: entity.callerId,
+                calleeId: entity.calleeId,
+                callSite: entity.callSite,
+                confidence: GraphConfidence(rawValue: entity.confidence) ?? .low,
+                source: GraphEdgeSource(rawValue: entity.source) ?? .treeSitterFallback
+            )
+        }
+        return SymbolGraphResult(
+            nodes: nodes,
+            edges: edges,
+            source: metadata.flatMap { GraphEdgeSource(rawValue: $0.indexSource) }
+                ?? (edges.first?.source ?? .treeSitterFallback),
+            confidence: edges.contains { $0.confidence == .high } ? .high : .low,
+            diagnostics: metadata?.diagnostics ?? []
+        )
     }
 
     func insertFindings(_ findings: [Finding]) {
@@ -1339,6 +1424,9 @@ actor PersistenceService: ModelActor {
         try? modelContext.delete(model: AnalysisRunEntity.self)
         try? modelContext.delete(model: ChangedFileEntity.self)
         try? modelContext.delete(model: ChangedSymbolEntity.self)
+        try? modelContext.delete(model: SymbolGraphNodeEntity.self)
+        try? modelContext.delete(model: SymbolGraphEdgeEntity.self)
+        try? modelContext.delete(model: SymbolIndexMetadataEntity.self)
         try? modelContext.delete(model: FindingEntity.self)
         try? modelContext.save()
     }
@@ -1448,6 +1536,12 @@ class AnalysisCoordinator: ObservableObject {
             if !allSymbols.isEmpty {
                 await persistence.insertSymbols(allSymbols)
             }
+            await persistence.insertSymbolGraph(
+                astResult.graph,
+                analysisRunId: run.id,
+                repoPath: path,
+                revision: nil
+            )
 
             // FIX 1: Build file path map for deterministic rules
             let filePathMap: [UUID: String] = Dictionary(

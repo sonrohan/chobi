@@ -146,6 +146,128 @@ final class ChangedSymbolEntity {
 }
 
 @Model
+final class SymbolGraphNodeEntity {
+    @Attribute(.unique) var id: String
+    var analysisRunId: UUID
+    var identityData: Data
+    var definitionData: Data?
+    var isChangedInPR: Bool
+    var isTest: Bool
+    var confidence: String
+
+    var identity: SymbolIdentity {
+        get {
+            (try? JSONDecoder().decode(SymbolIdentity.self, from: identityData))
+                ?? SymbolIdentity(
+                    id: id,
+                    scipSymbol: nil,
+                    fallbackKey: id,
+                    displayName: id,
+                    qualifiedName: nil,
+                    kind: .function
+                )
+        }
+        set {
+            identityData = (try? JSONEncoder().encode(newValue)) ?? Data()
+        }
+    }
+
+    var definition: SymbolLocation? {
+        get {
+            guard let definitionData else { return nil }
+            return try? JSONDecoder().decode(SymbolLocation.self, from: definitionData)
+        }
+        set {
+            definitionData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    init(
+        analysisRunId: UUID,
+        node: SymbolGraphNode
+    ) {
+        self.id = "\(analysisRunId.uuidString)::\(node.id)"
+        self.analysisRunId = analysisRunId
+        self.identityData = (try? JSONEncoder().encode(node.identity)) ?? Data()
+        self.definitionData = try? node.definition.map { try JSONEncoder().encode($0) }
+        self.isChangedInPR = node.isChangedInPR
+        self.isTest = node.isTest
+        self.confidence = node.confidence.rawValue
+    }
+}
+
+@Model
+final class SymbolGraphEdgeEntity {
+    @Attribute(.unique) var id: String
+    var analysisRunId: UUID
+    var edgeId: String
+    var callerId: String
+    var calleeId: String
+    var callSiteData: Data?
+    var confidence: String
+    var source: String
+
+    var callSite: SymbolLocation? {
+        get {
+            guard let callSiteData else { return nil }
+            return try? JSONDecoder().decode(SymbolLocation.self, from: callSiteData)
+        }
+        set {
+            callSiteData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    init(
+        analysisRunId: UUID,
+        edge: SymbolGraphEdge
+    ) {
+        self.id = "\(analysisRunId.uuidString)::\(edge.id)"
+        self.analysisRunId = analysisRunId
+        self.edgeId = edge.id
+        self.callerId = edge.callerId
+        self.calleeId = edge.calleeId
+        self.callSiteData = try? edge.callSite.map { try JSONEncoder().encode($0) }
+        self.confidence = edge.confidence.rawValue
+        self.source = edge.source.rawValue
+    }
+}
+
+@Model
+final class SymbolIndexMetadataEntity {
+    @Attribute(.unique) var id: UUID
+    var analysisRunId: UUID
+    var repositoryKey: String
+    var revision: String?
+    var indexSource: String
+    var indexedDocumentCount: Int
+    var graphBuildTimestamp: Date
+    var diagnostics: [String]
+    var fallbackReason: String?
+
+    init(
+        id: UUID = UUID(),
+        analysisRunId: UUID,
+        repositoryKey: String,
+        revision: String?,
+        indexSource: String,
+        indexedDocumentCount: Int,
+        graphBuildTimestamp: Date = Date(),
+        diagnostics: [String],
+        fallbackReason: String?
+    ) {
+        self.id = id
+        self.analysisRunId = analysisRunId
+        self.repositoryKey = repositoryKey
+        self.revision = revision
+        self.indexSource = indexSource
+        self.indexedDocumentCount = indexedDocumentCount
+        self.graphBuildTimestamp = graphBuildTimestamp
+        self.diagnostics = diagnostics
+        self.fallbackReason = fallbackReason
+    }
+}
+
+@Model
 final class FindingEntity {
     @Attribute(.unique) var id: UUID
     var analysisRunId: UUID

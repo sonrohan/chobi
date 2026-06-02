@@ -182,10 +182,12 @@ actor AgentContextQueryService {
 
         let filePath = fileById[symbol.changedFileId]?.path
         let changedFilePaths = Set(details.files.map(\.path))
+        let graph = await persistence.getSymbolGraph(runId: details.run.id)
         return AgentContextBuilder.buildImpactGraph(
             symbol: symbol,
             filePath: filePath,
-            changedFilePaths: changedFilePaths
+            changedFilePaths: changedFilePaths,
+            graph: graph
         )
     }
 

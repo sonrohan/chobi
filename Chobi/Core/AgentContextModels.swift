@@ -160,6 +160,10 @@ struct MCPImpactGraph: Codable, Equatable, Sendable {
     var callerNodes: [MCPGraphNode]
     var calleeNodes: [MCPGraphNode]
     var unresolvedCalleeNames: [String]
+    var edges: [MCPGraphEdge]
+    var rootNode: MCPGraphNode?
+    var graphSource: String
+    var confidence: String
     var nextActions: [String]
 }
 
@@ -181,6 +185,17 @@ struct MCPGraphNode: Codable, Equatable, Sendable {
     var line: Int?
     var isChangedInPR: Bool
     var isTest: Bool
+    var definitionRange: MCPLineRange?
+}
+
+struct MCPGraphEdge: Codable, Equatable, Sendable {
+    var id: String
+    var callerId: String
+    var calleeId: String
+    var callSiteRange: MCPLineRange?
+    var callSitePath: String?
+    var confidence: String
+    var source: String
 }
 
 // chobi.get_review_plan
