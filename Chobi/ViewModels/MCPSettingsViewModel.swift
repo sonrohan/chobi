@@ -46,7 +46,7 @@ enum MCPConfigurationTab: String, CaseIterable, Identifiable {
 @Observable
 @MainActor
 class MCPSettingsViewModel {
-    var selectedConfiguration: MCPConfigurationTab = .codex
+    var selectedConfiguration: MCPConfigurationTab = .claudeCode
     var copiedState: String?
 
     private let appExecutablePath = "/Applications/Chobi.app/Contents/MacOS/Chobi"
@@ -90,7 +90,7 @@ class MCPSettingsViewModel {
     }
 
     var aboutText: String {
-        "MCP lets AI coding tools query Chobi's local review context through a stdio process. Agents can list workspaces, inspect review plans, explain files and symbols, search analyzed context, and read bounded file ranges."
+        "MCP lets AI coding tools query Chobi's local analysis context through a stdio process. Agents can list workspaces, get analysis summaries, list and explain changed files and symbols, explore call-graph impact, retrieve the ordered review plan, and read bounded file ranges. All data is read-only and local."
     }
 
     func copyConfiguration() {

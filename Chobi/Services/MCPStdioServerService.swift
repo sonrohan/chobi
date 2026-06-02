@@ -1,51 +1,9 @@
 import Foundation
 
-@MainActor
-final class MCPStdioSnapshotProvider: AgentContextSnapshotProviding {
-    private var snapshot = AgentContextSnapshot(
-        repositories: [],
-        selectedRepoId: nil,
-        selectedBranch: nil,
-        selectedCommitSha: nil,
-        currentDetails: nil,
-        pullRequests: []
-    )
-
-    func load(persistence: PersistenceService) async {
-        let repositories = await persistence.allRepositories()
-        let pullRequests = await persistence.allPullRequests()
-        let selectedRepo = repositories.first
-        let latestRun = pullRequests.compactMap(\.latestRun).sorted {
-            $0.createdAt > $1.createdAt
-        }.first
-        let details: AnalysisDetails?
-        if let run = latestRun {
-            details = await persistence.getAnalysisDetails(
-                runId: run.id,
-                profile: AnalysisProfileStore.load(repoPath: selectedRepo?.path)
-            )
-        } else {
-            details = nil
-        }
-        snapshot = AgentContextSnapshot(
-            repositories: repositories,
-            selectedRepoId: selectedRepo?.id,
-            selectedBranch: nil,
-            selectedCommitSha: nil,
-            currentDetails: details,
-            pullRequests: pullRequests
-        )
-    }
-
-    func agentContextSnapshot() -> AgentContextSnapshot {
-        snapshot
-    }
-}
-
 enum MCPStdioServerService {
     static func run() async {
         let persistence = PersistenceService()
-        let snapshotProvider = await MainActor.run { MCPStdioSnapshotProvider() }
+        let snapshotProvider = await MainActor.run { AppState() }
         await snapshotProvider.load(persistence: persistence)
         let queryService = AgentContextQueryService(
             stateProvider: snapshotProvider,
@@ -85,9 +43,7 @@ enum MCPStdioServerService {
                     "protocolVersion": "2025-06-18",
                     "serverInfo": ["name": "chobi", "version": appVersion],
                     "capabilities": [
-                        "tools": [:],
-                        "resources": [:],
-                        "prompts": [:],
+                        "tools": [:]
                     ],
                 ]
             case "tools/list":
@@ -103,38 +59,6 @@ enum MCPStdioServerService {
                 result = [
                     "content": routed.content,
                     "isError": routed.isError ?? false,
-                ]
-            case "resources/list":
-                result = ["resources": encodableObject(await router.listResources())]
-            case "resources/read":
-                let params = request["params"] as? [String: Any] ?? [:]
-                guard let uri = params["uri"] as? String else {
-                    throw AgentContextError(
-                        code: .invalidArguments, message: "Resource URI is required.")
-                }
-                let routed = await router.readResource(uri: uri)
-                result = [
-                    "contents": routed.content.map {
-                        ["uri": uri, "mimeType": "application/json", "text": $0["text"] ?? ""]
-                    }
-                ]
-            case "prompts/list":
-                result = ["prompts": encodableObject(await router.listPrompts())]
-            case "prompts/get":
-                let params = request["params"] as? [String: Any] ?? [:]
-                guard let name = params["name"] as? String else {
-                    throw AgentContextError(
-                        code: .invalidArguments, message: "Prompt name is required.")
-                }
-                let prompt = try await router.getPrompt(name: name)
-                result = [
-                    "description": prompt.description,
-                    "messages": prompt.messages.map { message in
-                        [
-                            "role": message.role,
-                            "content": message.content,
-                        ]
-                    },
                 ]
             default:
                 return jsonRpcError(id: id, code: -32601, message: "Unsupported method: \(method)")
@@ -174,5 +98,29 @@ enum MCPStdioServerService {
             let text = String(data: data, encoding: .utf8)
         else { return }
         FileHandle.standardOutput.write(Data("\(text)\n".utf8))
+    }
+}
+
+// MARK: - Lightweight AppState for MCP stdio mode
+
+extension AppState {
+    /// Loads repositories and the most recent completed analysis from persistence.
+    /// Used only in the MCP stdio subprocess — not in the GUI app.
+    func load(persistence: PersistenceService) async {
+        repositories = await persistence.allRepositories()
+        selectedRepoId = repositories.first?.id
+        pullRequests = await persistence.allPullRequests()
+
+        guard let repo = selectedRepo else { return }
+        let latestRun =
+            pullRequests
+            .compactMap(\.latestRun)
+            .sorted { $0.createdAt > $1.createdAt }
+            .first
+        if let run = latestRun {
+            let profile = AnalysisProfileStore.load(repoPath: repo.path)
+            analysisDetails = await persistence.getAnalysisDetails(
+                runId: run.id, profile: profile)
+        }
     }
 }

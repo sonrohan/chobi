@@ -153,7 +153,7 @@ struct MCPSettingsView: View {
                 .foregroundColor(.textPrimary)
 
             Text(
-                "Chobi exposes analysis summaries, review plans, symbols, findings, and bounded file ranges. No mutation tools or network listener are registered."
+                "Chobi exposes analysis summaries, review plans, changed files, symbols, call-graph impact data, and bounded file ranges. No mutation tools, network listeners, or remote calls are registered."
             )
             .font(.system(size: 11))
             .foregroundColor(.textSecondary)

@@ -1,37 +1,6 @@
 import Foundation
 
-enum AgentContextErrorCode: String, Codable, Sendable {
-    case workspaceNotSelected = "workspace_not_selected"
-    case analysisNotReady = "analysis_not_ready"
-    case runNotFound = "run_not_found"
-    case fileNotFound = "file_not_found"
-    case symbolNotFound = "symbol_not_found"
-    case lineRangeTooLarge = "line_range_too_large"
-    case pathOutsideWorkspace = "path_outside_workspace"
-    case profileNotFound = "profile_not_found"
-    case unsupportedQuery = "unsupported_query"
-    case invalidArguments = "invalid_arguments"
-    case invalidToken = "invalid_token"
-}
-
-struct AgentContextError: Error, Codable, Equatable, Sendable {
-    var code: AgentContextErrorCode
-    var message: String
-}
-
-struct AgentContextSnapshot: Sendable {
-    var repositories: [GitRepository]
-    var selectedRepoId: UUID?
-    var selectedBranch: String?
-    var selectedCommitSha: String?
-    var currentDetails: AnalysisDetails?
-    var pullRequests: [PullRequest]
-}
-
-@MainActor
-protocol AgentContextSnapshotProviding: AnyObject {
-    func agentContextSnapshot() -> AgentContextSnapshot
-}
+// MARK: - AppState snapshot bridge
 
 extension AppState: AgentContextSnapshotProviding {
     func agentContextSnapshot() -> AgentContextSnapshot {
@@ -61,7 +30,9 @@ actor AgentContextQueryService {
         self.fileRangeLimit = fileRangeLimit
     }
 
-    func listWorkspaces(includeInactive: Bool = true) async -> [AgentWorkspaceSummary] {
+    // MARK: - chobi.list_workspaces
+
+    func listWorkspaces(includeInactive: Bool = true) async -> [MCPWorkspace] {
         let snapshot = await MainActor.run { stateProvider.agentContextSnapshot() }
         let prs = await persistence.allPullRequests()
 
@@ -73,11 +44,11 @@ actor AgentContextQueryService {
                 let latestRun = repoPRs.compactMap(\.latestRun).sorted {
                     $0.createdAt > $1.createdAt
                 }.first
-                return AgentWorkspaceSummary(
+                return MCPWorkspace(
                     id: repo.id.uuidString,
                     name: repo.name,
                     pathBasename: URL(fileURLWithPath: repo.path).lastPathComponent,
-                    selected: repo.id == snapshot.selectedRepoId,
+                    isSelected: repo.id == snapshot.selectedRepoId,
                     branch: repo.id == snapshot.selectedRepoId ? snapshot.selectedBranch : nil,
                     latestRunId: latestRun?.id.uuidString,
                     latestRunStatus: latestRun?.status.rawValue
@@ -85,55 +56,35 @@ actor AgentContextQueryService {
             }
     }
 
-    func currentReviewContext(options: AgentContextOptions) async throws -> AgentReviewContext {
-        let snapshot = await MainActor.run { stateProvider.agentContextSnapshot() }
-        guard let repo = selectedRepository(in: snapshot) else {
-            throw AgentContextError(
-                code: .workspaceNotSelected, message: "No workspace is selected.")
-        }
-        guard let details = snapshot.currentDetails else {
-            throw AgentContextError(
-                code: .analysisNotReady,
-                message: "Analyze the selected workspace before requesting review context.")
-        }
-        guard details.run.status == .completed else {
-            throw AgentContextError(
-                code: .analysisNotReady, message: "The selected analysis has not completed.")
-        }
-        let profile = AnalysisProfileStore.load(repoPath: repo.path)
-        return AgentContextBuilder.build(
+    // MARK: - chobi.get_analysis_summary
+
+    func getAnalysisSummary(runId: UUID?) async throws -> MCPAnalysisSummary {
+        let (details, repo, snapshot) = try await detailsForOptionalRun(runId)
+        let activeBranch = repo?.id == snapshot.selectedRepoId ? snapshot.selectedBranch : nil
+        return AgentContextBuilder.buildSummary(
             details: details,
             repository: repo,
-            profile: profile,
-            selectedCommitSha: snapshot.selectedCommitSha,
-            activeBranch: snapshot.selectedBranch,
-            options: options
+            activeBranch: activeBranch
         )
     }
 
-    func runReviewContext(runId: UUID, options: AgentContextOptions) async throws
-        -> AgentReviewContext
-    {
-        let snapshot = await MainActor.run { stateProvider.agentContextSnapshot() }
-        let repo = repository(forRunId: runId, snapshot: snapshot)
-        let profile = AnalysisProfileStore.load(repoPath: repo?.path)
-        guard let details = await persistence.getAnalysisDetails(runId: runId, profile: profile)
-        else {
-            throw AgentContextError(code: .runNotFound, message: "Analysis run was not found.")
-        }
-        guard details.run.status == .completed else {
-            throw AgentContextError(
-                code: .analysisNotReady, message: "Analysis run is not complete.")
-        }
-        return AgentContextBuilder.build(
+    // MARK: - chobi.list_changed_files
+
+    func listChangedFiles(
+        runId: UUID?,
+        minSeverity: Severity?,
+        maxItems: Int
+    ) async throws -> MCPFileSummaryList {
+        let (details, repo, _) = try await detailsForOptionalRun(runId)
+        return AgentContextBuilder.buildFileSummaryList(
             details: details,
             repository: repo,
-            profile: profile,
-            selectedCommitSha: nil,
-            activeBranch: repo?.id == snapshot.selectedRepoId ? snapshot.selectedBranch : nil,
-            options: options
+            maxItems: maxItems,
+            minSeverity: minSeverity
         )
     }
+
+    // MARK: - chobi.explain_file
 
     func explainFile(
         runId: UUID?,
@@ -142,32 +93,30 @@ actor AgentContextQueryService {
         includeSymbols: Bool,
         includeFindings: Bool,
         maxHunkLines: Int
-    ) async throws -> AgentFileContext {
-        let (details, repo, _) = try await detailsForOptionalRun(runId)
+    ) async throws -> MCPFileDetail {
+        let (details, _, _) = try await detailsForOptionalRun(runId)
         guard let file = details.files.first(where: { $0.path == path }) else {
             throw AgentContextError(code: .fileNotFound, message: "Changed file was not found.")
         }
-        let fileById = Dictionary(uniqueKeysWithValues: details.files.map { ($0.id, $0) })
-        var context = AgentContextBuilder.mapFile(
-            file,
-            symbols: includeSymbols ? details.symbols.filter { $0.changedFileId == file.id } : [],
-            findings: includeFindings
-                ? details.findings.filter { $0.changedFileId == file.id } : [],
-            buckets: details.changeBuckets.filter { $0.files.contains(file.path) },
-            highlights: details.riskHighlights.filter { $0.filePath == file.path },
-            fileById: fileById,
+        let symbols = includeSymbols ? details.symbols.filter { $0.changedFileId == file.id } : []
+        let findings =
+            includeFindings ? details.findings.filter { $0.changedFileId == file.id } : []
+        let buckets = details.changeBuckets.filter { $0.files.contains(file.path) }
+        let highlights = details.riskHighlights.filter { $0.filePath == file.path }
+
+        return AgentContextBuilder.buildFileDetail(
+            file: file,
+            symbols: symbols,
+            findings: findings,
+            buckets: buckets,
+            highlights: highlights,
+            includeHunks: includeHunks,
+            maxHunkLines: maxHunkLines,
             detailLevel: .full
         )
-        if !includeHunks {
-            context.hunks = []
-        } else {
-            context.hunks = capHunkLines(context.hunks, maxLines: max(0, maxHunkLines))
-        }
-        if case .none = repo {
-            context.truncated = context.truncated || details.files.count > 1
-        }
-        return context
     }
+
+    // MARK: - chobi.explain_symbol
 
     func explainSymbol(
         runId: UUID?,
@@ -176,7 +125,7 @@ actor AgentContextQueryService {
         line: Int?,
         includeCallers: Bool,
         includeCallees: Bool
-    ) async throws -> AgentSymbolContext {
+    ) async throws -> MCPSymbolDetail {
         let (details, _, _) = try await detailsForOptionalRun(runId)
         let fileById = Dictionary(uniqueKeysWithValues: details.files.map { ($0.id, $0) })
         guard
@@ -189,165 +138,69 @@ actor AgentContextQueryService {
                 .sorted(by: { $0.startLine < $1.startLine })
                 .first
         else {
-            throw AgentContextError(code: .symbolNotFound, message: "Changed symbol was not found.")
-        }
-        if !includeCallers {
-            symbol.callers = []
-        }
-        if !includeCallees {
-            symbol.callees = []
-        }
-        return AgentContextBuilder.mapSymbol(symbol, fileById: fileById)
-    }
-
-    func profileContext(
-        workspaceId: UUID?,
-        runId: UUID?,
-        includeRules: Bool
-    ) async throws -> AgentProfileContext {
-        let snapshot = await MainActor.run { stateProvider.agentContextSnapshot() }
-        let repo =
-            workspaceId.flatMap { id in snapshot.repositories.first { $0.id == id } }
-            ?? runId.flatMap { repository(forRunId: $0, snapshot: snapshot) }
-            ?? selectedRepository(in: snapshot)
-        guard let repo else {
             throw AgentContextError(
-                code: .workspaceNotSelected, message: "No workspace is selected.")
+                code: .symbolNotFound, message: "Changed symbol was not found.")
         }
-        return AgentContextBuilder.profileContext(
-            profile: AnalysisProfileStore.load(repoPath: repo.path),
-            repository: repo,
-            includeRules: includeRules
+        if !includeCallers { symbol.callers = [] }
+        if !includeCallees { symbol.callees = [] }
+
+        let filePath = fileById[symbol.changedFileId]?.path
+
+        // Build a compact impact summary from caller/callee counts
+        let impactSummary = makeImpactSummary(for: symbol)
+
+        return AgentContextBuilder.buildSymbolDetail(
+            symbol: symbol,
+            filePath: filePath,
+            impactSummary: impactSummary
         )
     }
 
-    func reviewPlan(runId: UUID?, focus: String) async throws -> AgentReviewPlanContext {
-        var context = try await reviewContextForOptionalRun(
-            runId, options: .init(detailLevel: .standard))
-        if focus != "all" {
-            context.reviewPlan.targets = context.reviewPlan.targets.filter {
-                targetMatchesFocus($0, focus: focus)
-            }
-            context.reviewPlan.buckets = context.reviewPlan.buckets.filter {
-                bucketMatchesFocus($0, focus: focus)
-            }
-        }
-        return context.reviewPlan
-    }
+    // MARK: - chobi.get_impact_graph
 
-    func searchReviewContext(
+    func getImpactGraph(
         runId: UUID?,
-        query: String,
-        types: [String],
-        limit: Int
-    ) async throws -> AgentQueryResult {
-        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw AgentContextError(code: .invalidArguments, message: "Search query is required.")
-        }
-        let context = try await reviewContextForOptionalRun(
-            runId,
-            options: AgentContextOptions(
-                detailLevel: .full, includeFiles: true, includeSymbols: true)
-        )
-        let allowed = Set(
-            types.isEmpty ? ["file", "symbol", "finding", "bucket", "profileRule"] : types)
-        let needle = query.lowercased()
-        var matches: [AgentQueryMatch] = []
-
-        if allowed.contains("file") {
-            matches += context.files.compactMap { file in
-                scoredMatch(
-                    id: file.id,
-                    type: "file",
-                    title: file.path,
-                    path: file.path,
-                    lineStart: nil,
-                    lineEnd: nil,
-                    text: [file.path, file.classification, file.status].joined(separator: " "),
-                    query: needle,
-                    nextAction: "chobi.explain_file"
-                )
-            }
-        }
-        if allowed.contains("symbol") {
-            matches += context.symbols.compactMap { symbol in
-                scoredMatch(
-                    id: symbol.id,
-                    type: "symbol",
-                    title: symbol.name,
-                    path: symbol.filePath,
-                    lineStart: symbol.startLine,
-                    lineEnd: symbol.endLine,
-                    text: [symbol.name, symbol.semanticType, symbol.semanticArea ?? ""]
-                        .joined(separator: " "),
-                    query: needle,
-                    nextAction: "chobi.explain_symbol"
-                )
-            }
-        }
-        if allowed.contains("finding") {
-            matches += context.findings.compactMap { finding in
-                scoredMatch(
-                    id: finding.id,
-                    type: "finding",
-                    title: finding.message,
-                    path: finding.filePath,
-                    lineStart: finding.lineStart,
-                    lineEnd: finding.lineEnd,
-                    text: [finding.message, finding.category, finding.ruleSource]
-                        .joined(separator: " "),
-                    query: needle,
-                    nextAction: "chobi.explain_file"
-                )
-            }
-        }
-        if allowed.contains("bucket") {
-            matches += context.reviewPlan.buckets.compactMap { bucket in
-                scoredMatch(
-                    id: bucket.id,
-                    type: "bucket",
-                    title: bucket.title,
-                    path: nil,
-                    lineStart: nil,
-                    lineEnd: nil,
-                    text: [bucket.title, bucket.summary, bucket.type].joined(separator: " "),
-                    query: needle,
-                    nextAction: "chobi.get_review_plan"
-                )
-            }
-        }
-        if allowed.contains("profileRule") {
-            matches += context.profile.ruleCounts.compactMap { key, value in
-                scoredMatch(
-                    id: "profile-\(key)",
-                    type: "profileRule",
-                    title: key,
-                    path: context.profile.sourcePath,
-                    lineStart: nil,
-                    lineEnd: nil,
-                    text: "\(key) \(value)",
-                    query: needle,
-                    nextAction: "chobi.get_profile_context"
-                )
-            }
+        symbolName: String,
+        path: String?,
+        line: Int?
+    ) async throws -> MCPImpactGraph {
+        let (details, _, _) = try await detailsForOptionalRun(runId)
+        let fileById = Dictionary(uniqueKeysWithValues: details.files.map { ($0.id, $0) })
+        guard
+            let symbol = details.symbols
+                .filter({
+                    $0.name == symbolName
+                        && (path == nil || fileById[$0.changedFileId]?.path == path)
+                        && (line == nil || ($0.startLine <= line! && $0.endLine >= line!))
+                })
+                .sorted(by: { $0.startLine < $1.startLine })
+                .first
+        else {
+            throw AgentContextError(
+                code: .symbolNotFound, message: "Changed symbol was not found.")
         }
 
-        let sorted = matches.sorted {
-            if $0.score != $1.score { return $0.score > $1.score }
-            return $0.title < $1.title
-        }
-        let capped = Array(sorted.prefix(max(1, limit)))
-        return AgentQueryResult(
-            schemaVersion: AgentContextBuilder.schemaVersion,
-            source: "chobi",
-            runId: context.scope.runId,
-            workspaceId: context.workspace.id,
-            query: query,
-            matches: capped,
-            truncated: sorted.count > capped.count,
-            nextActions: ["chobi.explain_file", "chobi.explain_symbol"]
+        let filePath = fileById[symbol.changedFileId]?.path
+        let changedFilePaths = Set(details.files.map(\.path))
+        return AgentContextBuilder.buildImpactGraph(
+            symbol: symbol,
+            filePath: filePath,
+            changedFilePaths: changedFilePaths
         )
     }
+
+    // MARK: - chobi.get_review_plan
+
+    func getReviewPlan(runId: UUID?, focus: String, maxItems: Int) async throws -> MCPReviewPlan {
+        let (details, _, _) = try await detailsForOptionalRun(runId)
+        return AgentContextBuilder.buildReviewPlan(
+            details: details,
+            focus: focus,
+            maxItems: maxItems
+        )
+    }
+
+    // MARK: - chobi.read_file_range
 
     func readFileRange(
         workspaceId: UUID?,
@@ -355,7 +208,7 @@ actor AgentContextQueryService {
         startLine: Int,
         endLine: Int,
         revision: String
-    ) async throws -> AgentFileRangeResult {
+    ) async throws -> MCPFileRange {
         let snapshot = await MainActor.run { stateProvider.agentContextSnapshot() }
         guard
             let repo =
@@ -382,8 +235,8 @@ actor AgentContextQueryService {
             }
             content = (try? String(contentsOf: resolvedURL, encoding: .utf8)) ?? ""
         } else if revision == "base" || revision == "head" {
-            let details = try await reviewContextForOptionalRun(nil, options: .init())
-            let rev = revision == "base" ? details.scope.baseSha : details.scope.headSha
+            let (details, _, _) = try await detailsForOptionalRun(nil)
+            let rev = revision == "base" ? details.run.baseSha : details.run.headSha
             content = GitService.fileContent(at: rev, path: path, cwd: repo.path)
         } else {
             throw AgentContextError(code: .invalidArguments, message: "Unsupported revision.")
@@ -398,32 +251,19 @@ actor AgentContextQueryService {
             throw AgentContextError(code: .fileNotFound, message: "Start line is outside the file.")
         }
         let cappedEnd = min(endLine, allLines.count)
-        let numbered = (startLine...cappedEnd).map { index in
-            AgentNumberedLine(line: index, text: allLines[index - 1])
-        }
-        return AgentFileRangeResult(
-            schemaVersion: AgentContextBuilder.schemaVersion,
-            source: "chobi",
+        let lineTexts = Array(allLines[(startLine - 1)..<cappedEnd])
+
+        return AgentContextBuilder.buildFileRange(
             workspaceId: repo.id.uuidString,
             path: path,
             revision: revision,
             startLine: startLine,
             endLine: cappedEnd,
-            lines: numbered,
-            truncated: cappedEnd < endLine,
-            nextActions: ["chobi.explain_file"]
+            lines: lineTexts
         )
     }
 
-    private func reviewContextForOptionalRun(
-        _ runId: UUID?,
-        options: AgentContextOptions
-    ) async throws -> AgentReviewContext {
-        if let runId {
-            return try await runReviewContext(runId: runId, options: options)
-        }
-        return try await currentReviewContext(options: options)
-    }
+    // MARK: - Private helpers
 
     private func detailsForOptionalRun(_ runId: UUID?) async throws -> (
         AnalysisDetails, GitRepository?, AgentContextSnapshot
@@ -454,7 +294,8 @@ actor AgentContextQueryService {
         return snapshot.repositories.first { $0.id == id }
     }
 
-    private func repository(forRunId runId: UUID, snapshot: AgentContextSnapshot) -> GitRepository?
+    private func repository(forRunId runId: UUID, snapshot: AgentContextSnapshot)
+        -> GitRepository?
     {
         let matchingPR = snapshot.pullRequests.first { $0.latestRun?.id == runId }
         guard let repository = matchingPR?.repository.replacingOccurrences(of: "local/", with: "")
@@ -463,80 +304,29 @@ actor AgentContextQueryService {
             ?? selectedRepository(in: snapshot)
     }
 
-    private func capHunkLines(_ hunks: [AgentHunkContext], maxLines: Int) -> [AgentHunkContext] {
-        var remaining = maxLines
-        return hunks.map { hunk in
-            var copy = hunk
-            if remaining <= 0 {
-                copy.previewLines = []
-                copy.truncated = true
-                return copy
-            }
-            let prefix = Array(copy.previewLines.prefix(remaining))
-            remaining -= prefix.count
-            copy.truncated = copy.truncated || prefix.count < copy.previewLines.count
-            copy.previewLines = prefix
-            return copy
+    private func makeImpactSummary(for symbol: ChangedSymbol) -> MCPImpactSummary {
+        let testRefCount = symbol.callers.filter {
+            $0.lowercased().contains("test") || $0.lowercased().contains("spec")
+        }.count
+        let total = symbol.callers.count + symbol.callees.count
+        let impactLevel: ImpactLevel
+        if total >= 10 || symbol.callers.count >= 6 {
+            impactLevel = .high
+        } else if total >= 4 || symbol.callers.count >= 2 {
+            impactLevel = .medium
+        } else {
+            impactLevel = .low
         }
-    }
-
-    private func targetMatchesFocus(_ target: AgentReviewTargetContext, focus: String) -> Bool {
-        let text = "\(target.title) \(target.reason) \(target.source)".lowercased()
-        switch focus {
-        case "needs_attention":
-            return target.severity == "medium" || target.severity == "high"
-        case "security":
-            return text.contains("security") || text.contains("auth")
-        case "contracts":
-            return text.contains("contract") || text.contains("api")
-        case "tests":
-            return text.contains("test")
-        case "skim":
-            return false
-        default:
-            return true
-        }
-    }
-
-    private func bucketMatchesFocus(_ bucket: AgentBucketContext, focus: String) -> Bool {
-        switch focus {
-        case "security":
-            return bucket.type == "auth-security"
-        case "contracts":
-            return bucket.type == "api-contract"
-        case "tests":
-            return bucket.type == "tests"
-        case "skim":
-            return bucket.riskLevel == "info" || bucket.riskLevel == "low"
-        default:
-            return true
-        }
-    }
-
-    private func scoredMatch(
-        id: String,
-        type: String,
-        title: String,
-        path: String?,
-        lineStart: Int?,
-        lineEnd: Int?,
-        text: String,
-        query: String,
-        nextAction: String?
-    ) -> AgentQueryMatch? {
-        let haystack = text.lowercased()
-        guard haystack.contains(query) else { return nil }
-        let exactBonus = title.lowercased().contains(query) ? 10 : 0
-        return AgentQueryMatch(
-            id: id,
-            type: type,
-            title: title,
-            path: path,
-            lineStart: lineStart,
-            lineEnd: lineEnd,
-            snippet: text,
-            score: exactBonus + max(1, query.count),
-            nextAction: nextAction
+        return MCPImpactSummary(
+            directCallerCount: symbol.callers.count,
+            directCalleeCount: symbol.callees.count,
+            transitiveCallerCount: symbol.callers.count,
+            transitiveCalleeCount: symbol.callees.count,
+            fileCount: Set(symbol.callers.compactMap { $0.components(separatedBy: ":").first })
+                .count,
+            testReferenceCount: testRefCount,
+            impactLevel: impactLevel.rawValue,
+            confidence: symbol.metadata["caller_resolution"] == "indexed" ? "high" : "low"
         )
     }
 

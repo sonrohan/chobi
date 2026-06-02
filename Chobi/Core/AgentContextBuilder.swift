@@ -1,187 +1,126 @@
 import Foundation
 
 enum AgentContextBuilder {
-    nonisolated static let schemaVersion = "2026-05-25"
+    nonisolated static let schemaVersion = "2026-06-01"
 
-    nonisolated static func build(
+    // MARK: - Analysis Summary
+
+    nonisolated static func buildSummary(
         details: AnalysisDetails,
         repository: GitRepository?,
-        profile: AnalysisProfile,
-        selectedCommitSha: String? = nil,
-        activeBranch: String? = nil,
-        options: AgentContextOptions = AgentContextOptions()
-    ) -> AgentReviewContext {
-        let cap = cap(for: options)
-        let fileById = Dictionary(uniqueKeysWithValues: details.files.map { ($0.id, $0) })
-        let symbolsByFile = Dictionary(grouping: details.symbols, by: \.changedFileId)
-        let findingsByFile = Dictionary(grouping: details.findings, by: \.changedFileId)
-        let highlightsByFile = Dictionary(grouping: details.riskHighlights, by: \.filePath)
+        activeBranch: String?,
+        truncated: Bool = false
+    ) -> MCPAnalysisSummary {
+        let buckets = details.changeBuckets
+            .sorted { $0.reviewOrder < $1.reviewOrder }
+            .map(mapBucket)
 
-        let allFiles = details.files.sorted { $0.path < $1.path }
-        let allSymbols = details.symbols.sorted {
-            if $0.name != $1.name { return $0.name < $1.name }
-            return $0.startLine < $1.startLine
-        }
-        let allFindings = details.findings.sorted {
-            if $0.severity != $1.severity {
-                return severityRank($0.severity) > severityRank($1.severity)
-            }
-            if $0.message != $1.message { return $0.message < $1.message }
-            return ($0.lineStart ?? 0) < ($1.lineStart ?? 0)
-        }
-
-        let files: [AgentFileContext] =
-            options.includeFiles
-            ? limited(allFiles, cap).items.map { file in
-                mapFile(
-                    file,
-                    symbols: symbolsByFile[file.id] ?? [],
-                    findings: findingsByFile[file.id] ?? [],
-                    buckets: details.changeBuckets.filter { $0.files.contains(file.path) },
-                    highlights: highlightsByFile[file.path] ?? [],
-                    fileById: fileById,
-                    detailLevel: options.detailLevel
-                )
-            }
-            : []
-
-        let symbols: [AgentSymbolContext] =
-            options.includeSymbols
-            ? limited(allSymbols, cap).items.map { mapSymbol($0, fileById: fileById) }
-            : []
-
-        let findingLimit = options.detailLevel == .summary ? min(cap, 10) : cap
-        let limitedFindings = limited(allFindings, findingLimit)
-
-        let targetLimit = options.detailLevel == .summary ? min(cap, 10) : cap
-        let bucketLimit = options.detailLevel == .summary ? min(cap, 8) : cap
-        let highlightLimit = options.detailLevel == .summary ? min(cap, 10) : cap
-        let skimLimit = options.detailLevel == .summary ? min(cap, 10) : cap
-
-        let limitedTargets = limited(
-            details.reviewTargets.sorted { $0.priority < $1.priority }, targetLimit)
-        let limitedBuckets = limited(
-            details.changeBuckets.sorted { $0.reviewOrder < $1.reviewOrder }, bucketLimit)
-        let limitedHighlights = limited(
-            details.riskHighlights.sorted {
-                if $0.severity != $1.severity {
-                    return severityRank($0.severity) > severityRank($1.severity)
-                }
-                return $0.title < $1.title
-            }, highlightLimit)
-        let limitedSkim = limited(
-            details.skimTargets.sorted { $0.filePath < $1.filePath }, skimLimit)
-
-        let repoPath = repository?.path
-        let profileSourcePath = repoPath.map { path in
-            URL(fileURLWithPath: path).appendingPathComponent(AnalysisProfileStore.repoConfigPath)
-                .path
-        }
-        let hasRepoProfile = repoPath.map(AnalysisProfileStore.hasRepoProfile(repoPath:)) ?? false
-        let detectedPreset = repoPath.map(AnalysisProfileStore.detectBuiltInProfileId(repoPath:))
-
-        return AgentReviewContext(
-            schemaVersion: Self.schemaVersion,
+        return MCPAnalysisSummary(
+            schemaVersion: schemaVersion,
             source: "chobi",
-            detailLevel: options.detailLevel,
-            workspace: AgentWorkspaceContext(
-                id: repository?.id.uuidString,
-                name: repository?.name ?? details.pr.repository,
-                path: repository?.path,
-                activeBranch: activeBranch
-            ),
-            scope: AgentReviewScope(
-                runId: details.run.id.uuidString,
-                pullRequestId: details.pr.id.uuidString,
-                pullRequestNumber: details.pr.prNumber,
-                pullRequestTitle: details.pr.title,
-                baseSha: details.run.baseSha,
-                headSha: details.run.headSha,
-                selectedCommitSha: selectedCommitSha,
-                status: details.run.status.rawValue,
-                createdAt: details.run.createdAt,
-                updatedAt: details.run.updatedAt
-            ),
-            summary: mapSummary(details),
-            profile: mapProfile(
-                profile,
-                source: hasRepoProfile ? "repository" : "builtin",
-                sourcePath: hasRepoProfile ? profileSourcePath : nil,
-                detectedPresetId: hasRepoProfile ? nil : detectedPreset
-            ),
-            reviewPlan: AgentReviewPlanContext(
-                targets: limitedTargets.items.map(mapReviewTarget),
-                buckets: limitedBuckets.items.map(mapBucket),
-                riskHighlights: limitedHighlights.items.map(mapRiskHighlight),
-                skimTargets: limitedSkim.items.map(mapSkimTarget)
-            ),
-            files: files,
-            symbols: symbols,
-            findings: limitedFindings.items.map { mapFinding($0, fileById: fileById) },
-            truncated: AgentTruncation(
-                files: options.includeFiles && limited(allFiles, cap).truncated,
-                symbols: options.includeSymbols && limited(allSymbols, cap).truncated,
-                findings: limitedFindings.truncated,
-                reviewTargets: limitedTargets.truncated,
-                buckets: limitedBuckets.truncated,
-                riskHighlights: limitedHighlights.truncated,
-                skimTargets: limitedSkim.truncated
-            ),
+            workspaceId: repository?.id.uuidString,
+            workspaceName: repository?.name ?? details.pr.repository,
+            runId: details.run.id.uuidString,
+            branch: activeBranch,
+            riskScore: details.run.riskScore,
+            riskFactors: Array(details.riskFactors.prefix(8)),
+            fileCount: details.files.count,
+            additions: details.files.reduce(0) { $0 + $1.additions },
+            deletions: details.files.reduce(0) { $0 + $1.deletions },
+            fileClassificationCounts: count(details.files.map { $0.classification.rawValue }),
+            fileStatusCounts: count(details.files.map { $0.status.rawValue }),
+            findingSeverityCounts: count(details.findings.map { $0.severity.rawValue }),
+            symbolCount: details.symbols.count,
+            buckets: buckets,
+            reviewTargetCount: details.reviewTargets.count,
+            skimTargetCount: details.skimTargets.count,
+            truncated: truncated,
             nextActions: [
+                "chobi.list_changed_files",
                 "chobi.get_review_plan",
                 "chobi.explain_file",
-                "chobi.search_review_context",
             ]
         )
     }
 
-    nonisolated static func profileContext(
-        profile: AnalysisProfile,
+    // MARK: - File List
+
+    nonisolated static func buildFileSummaryList(
+        details: AnalysisDetails,
         repository: GitRepository?,
-        includeRules: Bool
-    ) -> AgentProfileContext {
-        let hasRepoProfile =
-            repository.map { AnalysisProfileStore.hasRepoProfile(repoPath: $0.path) }
-            ?? false
-        let sourcePath =
-            hasRepoProfile
-            ? repository.map {
-                URL(fileURLWithPath: $0.path).appendingPathComponent(
-                    AnalysisProfileStore.repoConfigPath
-                ).path
-            } : nil
-        let detectedPreset =
-            hasRepoProfile
-            ? nil
-            : repository.map {
-                AnalysisProfileStore.detectBuiltInProfileId(repoPath: $0.path)
-            }
-        var context = mapProfile(
-            profile,
-            source: hasRepoProfile ? "repository" : "builtin",
-            sourcePath: sourcePath,
-            detectedPresetId: detectedPreset
-        )
-        if !includeRules {
-            context.ruleCounts = [:]
+        maxItems: Int,
+        minSeverity: Severity?
+    ) -> MCPFileSummaryList {
+        let findingsByFile = Dictionary(grouping: details.findings, by: \.changedFileId)
+        let symbolsByFile = Dictionary(grouping: details.symbols, by: \.changedFileId)
+        let bucketsByFile: [UUID: [String]] = details.files.reduce(into: [:]) { result, file in
+            let ids = details.changeBuckets
+                .filter { $0.files.contains(file.path) }
+                .map(\.id)
+            result[file.id] = ids
         }
-        return context
+
+        var files = details.files.sorted { $0.path < $1.path }
+
+        if let minSev = minSeverity {
+            files = files.filter { file in
+                let filefindings = findingsByFile[file.id] ?? []
+                return filefindings.contains { severityRank($0.severity) >= severityRank(minSev) }
+            }
+        }
+
+        let capped = Array(files.prefix(max(1, maxItems)))
+        let summaries = capped.map { file -> MCPFileSummary in
+            MCPFileSummary(
+                id: file.id.uuidString,
+                path: file.path,
+                status: file.status.rawValue,
+                classification: file.classification.rawValue,
+                additions: file.additions,
+                deletions: file.deletions,
+                findingCount: findingsByFile[file.id]?.count ?? 0,
+                symbolCount: symbolsByFile[file.id]?.count ?? 0,
+                bucketIds: bucketsByFile[file.id] ?? []
+            )
+        }
+
+        return MCPFileSummaryList(
+            schemaVersion: schemaVersion,
+            source: "chobi",
+            workspaceId: repository?.id.uuidString,
+            runId: details.run.id.uuidString,
+            files: summaries,
+            truncated: files.count > capped.count,
+            nextActions: ["chobi.explain_file", "chobi.get_review_plan"]
+        )
     }
 
-    nonisolated static func mapFile(
-        _ file: ChangedFile,
+    // MARK: - File Detail
+
+    nonisolated static func buildFileDetail(
+        file: ChangedFile,
         symbols: [ChangedSymbol],
         findings: [Finding],
         buckets: [ChangeBucket],
         highlights: [RiskHighlight],
-        fileById: [UUID: ChangedFile],
+        includeHunks: Bool,
+        maxHunkLines: Int,
         detailLevel: AgentContextDetailLevel
-    ) -> AgentFileContext {
+    ) -> MCPFileDetail {
         let hunkLimit = detailLevel == .full ? file.hunks.count : min(file.hunks.count, 5)
-        let hunks = file.hunks.prefix(hunkLimit).enumerated().map { index, hunk in
-            mapHunk(hunk, index: index, detailLevel: detailLevel)
+        let hunks: [MCPHunk]
+        if includeHunks {
+            let mapped = file.hunks.prefix(hunkLimit).enumerated().map { index, hunk in
+                mapHunk(hunk, index: index, detailLevel: detailLevel)
+            }
+            hunks = capHunkLines(Array(mapped), maxLines: max(0, maxHunkLines))
+        } else {
+            hunks = []
         }
-        return AgentFileContext(
+
+        return MCPFileDetail(
+            schemaVersion: schemaVersion,
+            source: "chobi",
             id: file.id.uuidString,
             path: file.path,
             status: file.status.rawValue,
@@ -189,25 +128,36 @@ enum AgentContextBuilder {
             additions: file.additions,
             deletions: file.deletions,
             hunks: hunks,
-            findings: findings.sorted { $0.message < $1.message }.map {
-                mapFinding($0, fileById: fileById)
+            symbols: symbols.sorted { $0.startLine < $1.startLine }.map { s in
+                MCPSymbolRef(
+                    id: s.id.uuidString,
+                    name: s.name,
+                    kind: s.kind.rawValue,
+                    startLine: s.startLine,
+                    endLine: s.endLine
+                )
             },
-            symbols: symbols.sorted { $0.startLine < $1.startLine }.map {
-                mapSymbol($0, fileById: fileById)
-            },
-            buckets: buckets.sorted { $0.reviewOrder < $1.reviewOrder }.map(\.id),
+            findings: findings.sorted { $0.message < $1.message }.map(mapFinding),
+            bucketIds: buckets.sorted { $0.reviewOrder < $1.reviewOrder }.map(\.id),
             riskHighlights: highlights.sorted { $0.title < $1.title }.map(mapRiskHighlight),
-            truncated: hunkLimit < file.hunks.count
+            truncated: hunkLimit < file.hunks.count,
+            nextActions: ["chobi.explain_symbol", "chobi.get_impact_graph"]
         )
     }
 
-    nonisolated static func mapSymbol(_ symbol: ChangedSymbol, fileById: [UUID: ChangedFile])
-        -> AgentSymbolContext
-    {
-        AgentSymbolContext(
+    // MARK: - Symbol Detail
+
+    nonisolated static func buildSymbolDetail(
+        symbol: ChangedSymbol,
+        filePath: String?,
+        impactSummary: MCPImpactSummary?
+    ) -> MCPSymbolDetail {
+        MCPSymbolDetail(
+            schemaVersion: schemaVersion,
+            source: "chobi",
             id: symbol.id.uuidString,
             fileId: symbol.changedFileId.uuidString,
-            filePath: fileById[symbol.changedFileId]?.path ?? symbol.metadata["file_path"],
+            filePath: filePath,
             name: symbol.name,
             kind: symbol.kind.rawValue,
             semanticType: symbol.semanticType,
@@ -217,19 +167,171 @@ enum AgentContextBuilder {
             endLine: symbol.endLine,
             callers: symbol.callers.sorted(),
             callees: symbol.callees.sorted(),
-            contractDeltas: filteredMetadata(symbol.metadata, prefix: "contract_"),
-            behaviorDeltas: filteredMetadata(symbol.metadata, suffix: "_added"),
-            metadata: symbol.metadata
+            impactSummary: impactSummary,
+            contractDeltas: symbol.metadata.filter { k, _ in k.hasPrefix("contract_") },
+            behaviorDeltas: symbol.metadata.filter { k, _ in k.hasSuffix("_added") },
+            nextActions: ["chobi.get_impact_graph", "chobi.read_file_range"]
         )
     }
 
-    nonisolated static func mapFinding(_ finding: Finding, fileById: [UUID: ChangedFile])
-        -> AgentFindingContext
-    {
-        AgentFindingContext(
+    // MARK: - Impact Graph
+
+    nonisolated static func buildImpactGraph(
+        symbol: ChangedSymbol,
+        filePath: String?,
+        changedFilePaths: Set<String>
+    ) -> MCPImpactGraph {
+        // Parse "filePath:qualifiedName" entries from callers
+        let callerNodes: [MCPGraphNode] = symbol.callers.enumerated().map { idx, raw in
+            let parts = raw.components(separatedBy: ":")
+            let callerPath = parts.count >= 2 ? parts[0] : raw
+            let callerName = parts.count >= 2 ? parts.dropFirst().joined(separator: ":") : raw
+            let isTest =
+                callerPath.lowercased().contains("test")
+                || callerPath.lowercased().contains("spec")
+            return MCPGraphNode(
+                id: "caller-\(idx)",
+                name: callerName,
+                filePath: callerPath,
+                line: nil,
+                isChangedInPR: changedFilePaths.contains(callerPath),
+                isTest: isTest
+            )
+        }
+
+        // Parse callee names (plain names, no file info)
+        let calleeNodes: [MCPGraphNode] = symbol.callees.enumerated().map { idx, name in
+            MCPGraphNode(
+                id: "callee-\(idx)",
+                name: name,
+                filePath: filePath ?? "",
+                line: nil,
+                isChangedInPR: false,
+                isTest: false
+            )
+        }
+
+        let testRefCount = callerNodes.filter(\.isTest).count
+        let uniqueCallerFiles = Set(callerNodes.map(\.filePath)).filter { !$0.isEmpty }
+        let totalFileCount = uniqueCallerFiles.union(filePath.map { [$0] } ?? []).count
+
+        let impactLevel: ImpactLevel
+        let total = callerNodes.count + calleeNodes.count
+        if total >= 10 || callerNodes.count >= 6 {
+            impactLevel = .high
+        } else if total >= 4 || callerNodes.count >= 2 {
+            impactLevel = .medium
+        } else {
+            impactLevel = .low
+        }
+
+        let summary = MCPImpactSummary(
+            directCallerCount: callerNodes.count,
+            directCalleeCount: calleeNodes.count,
+            transitiveCallerCount: callerNodes.count,  // flat data; no transitive traversal
+            transitiveCalleeCount: calleeNodes.count,
+            fileCount: totalFileCount,
+            testReferenceCount: testRefCount,
+            impactLevel: impactLevel.rawValue,
+            confidence: symbol.metadata["caller_resolution"] == "indexed" ? "high" : "low"
+        )
+
+        return MCPImpactGraph(
+            schemaVersion: schemaVersion,
+            source: "chobi",
+            symbolId: symbol.id.uuidString,
+            symbolName: symbol.metadata["qualified_name"] ?? symbol.name,
+            filePath: filePath,
+            startLine: symbol.startLine,
+            endLine: symbol.endLine,
+            summary: summary,
+            callerNodes: callerNodes,
+            calleeNodes: calleeNodes,
+            unresolvedCalleeNames: [],
+            nextActions: ["chobi.explain_file", "chobi.read_file_range"]
+        )
+    }
+
+    // MARK: - Review Plan
+
+    nonisolated static func buildReviewPlan(
+        details: AnalysisDetails,
+        focus: String,
+        maxItems: Int
+    ) -> MCPReviewPlan {
+        var targets = details.reviewTargets
+            .sorted { $0.priority < $1.priority }
+            .map(mapReviewTarget)
+        var buckets = details.changeBuckets
+            .sorted { $0.reviewOrder < $1.reviewOrder }
+            .map(mapBucket)
+        let highlights = details.riskHighlights
+            .sorted {
+                if $0.severity != $1.severity {
+                    return severityRank($0.severity) > severityRank($1.severity)
+                }
+                return $0.title < $1.title
+            }
+            .map(mapRiskHighlight)
+        let skimTargets = details.skimTargets
+            .sorted { $0.filePath < $1.filePath }
+            .map(mapSkimTarget)
+
+        if focus != "all" {
+            targets = targets.filter { targetMatchesFocus($0, focus: focus) }
+            buckets = buckets.filter { bucketMatchesFocus($0, focus: focus) }
+        }
+
+        let cappedTargets = Array(targets.prefix(maxItems))
+        let cappedBuckets = Array(buckets.prefix(maxItems))
+
+        return MCPReviewPlan(
+            schemaVersion: schemaVersion,
+            source: "chobi",
+            runId: details.run.id.uuidString,
+            targets: cappedTargets,
+            buckets: cappedBuckets,
+            riskHighlights: Array(highlights.prefix(maxItems)),
+            skimTargets: skimTargets,
+            truncated: targets.count > cappedTargets.count || buckets.count > cappedBuckets.count,
+            nextActions: ["chobi.explain_file", "chobi.get_impact_graph"]
+        )
+    }
+
+    // MARK: - File Range
+
+    nonisolated static func buildFileRange(
+        workspaceId: String,
+        path: String,
+        revision: String,
+        startLine: Int,
+        endLine: Int,
+        lines: [String]
+    ) -> MCPFileRange {
+        let numbered = (startLine...endLine).enumerated().compactMap {
+            idx, lineNum -> MCPNumberedLine? in
+            guard idx < lines.count else { return nil }
+            return MCPNumberedLine(line: lineNum, text: lines[idx])
+        }
+        return MCPFileRange(
+            schemaVersion: schemaVersion,
+            source: "chobi",
+            workspaceId: workspaceId,
+            path: path,
+            revision: revision,
+            startLine: startLine,
+            endLine: endLine,
+            lines: numbered,
+            truncated: false,
+            nextActions: ["chobi.explain_symbol", "chobi.get_impact_graph"]
+        )
+    }
+
+    // MARK: - Private Mapping Helpers
+
+    nonisolated static func mapFinding(_ finding: Finding) -> MCPFinding {
+        MCPFinding(
             id: finding.id.uuidString,
-            fileId: finding.changedFileId.uuidString,
-            filePath: fileById[finding.changedFileId]?.path,
             severity: finding.severity.rawValue,
             category: finding.category.rawValue,
             message: finding.message,
@@ -240,61 +342,35 @@ enum AgentContextBuilder {
         )
     }
 
-    private nonisolated static func mapSummary(_ details: AnalysisDetails) -> AgentReviewSummary {
-        AgentReviewSummary(
-            riskScore: details.run.riskScore,
-            changedFileCount: details.files.count,
-            additions: details.files.reduce(0) { $0 + $1.additions },
-            deletions: details.files.reduce(0) { $0 + $1.deletions },
-            fileStatusCounts: count(details.files.map { $0.status.rawValue }),
-            fileClassificationCounts: count(details.files.map { $0.classification.rawValue }),
-            findingSeverityCounts: count(details.findings.map { $0.severity.rawValue }),
-            findingCategoryCounts: count(details.findings.map { $0.category.rawValue }),
-            symbolCount: details.symbols.count,
-            topRiskFactors: Array(details.riskFactors.prefix(8))
+    nonisolated static func mapRiskHighlight(_ highlight: RiskHighlight) -> MCPRiskHighlight {
+        MCPRiskHighlight(
+            id: highlight.id,
+            severity: highlight.severity.rawValue,
+            category: highlight.category.rawValue,
+            title: highlight.title,
+            lineStart: highlight.lineStart,
+            lineEnd: highlight.lineEnd,
+            evidence: highlight.evidence.sorted(),
+            confidence: highlight.confidence
         )
     }
 
-    private nonisolated static func mapProfile(
-        _ profile: AnalysisProfile,
-        source: String,
-        sourcePath: String?,
-        detectedPresetId: String?
-    ) -> AgentProfileContext {
-        AgentProfileContext(
-            id: profile.id,
-            displayName: profile.displayName,
-            source: source,
-            sourcePath: sourcePath,
-            detectedPresetId: detectedPresetId,
-            fileClassificationRuleCount: profile.fileClassifications.count,
-            bucketRuleCount: profile.buckets.count,
-            symbolGroupRuleCount: profile.symbolGroups.count,
-            semanticHighlightRuleCount: profile.semanticHighlights.count,
-            fileHighlightRuleCount: profile.fileHighlights.count,
-            ruleCounts: [
-                "missingTests": profile.rules.missingTests == nil ? 0 : 1,
-                "schemaSync": profile.rules.schemaSync == nil ? 0 : 1,
-                "importBoundaries": profile.rules.importBoundaries.count,
-                "semanticAreaFindings": profile.rules.semanticAreaFindings.count,
-                "contractFindings": profile.rules.contractFindings.count,
-                "symbolCoverage": profile.rules.symbolCoverage == nil ? 0 : 1,
-            ],
-            riskScoring: AgentRiskScoringContext(
-                apiPathCount: profile.riskScoring.apiPaths.count,
-                sensitivePathCount: profile.riskScoring.sensitivePaths.count,
-                productionChangeDelta: profile.riskScoring.productionChangeDelta,
-                apiPathDelta: profile.riskScoring.apiPathDelta,
-                sensitivePathDelta: profile.riskScoring.sensitivePathDelta,
-                missingTestsDelta: profile.riskScoring.missingTestsDelta
-            )
+    nonisolated static func mapBucket(_ bucket: ChangeBucket) -> MCPBucket {
+        MCPBucket(
+            id: bucket.id,
+            type: bucket.type.rawValue,
+            title: bucket.title,
+            summary: bucket.summary,
+            files: bucket.files.sorted(),
+            symbols: bucket.symbols.sorted(),
+            riskLevel: bucket.riskLevel.rawValue,
+            riskReasons: bucket.riskReasons.sorted(),
+            reviewOrder: bucket.reviewOrder
         )
     }
 
-    private nonisolated static func mapReviewTarget(_ target: ReviewTarget)
-        -> AgentReviewTargetContext
-    {
-        AgentReviewTargetContext(
+    private nonisolated static func mapReviewTarget(_ target: ReviewTarget) -> MCPReviewTarget {
+        MCPReviewTarget(
             id: target.id.uuidString,
             priority: target.priority,
             severity: target.severity.rawValue,
@@ -308,48 +384,14 @@ enum AgentContextBuilder {
         )
     }
 
-    private nonisolated static func mapBucket(_ bucket: ChangeBucket) -> AgentBucketContext {
-        AgentBucketContext(
-            id: bucket.id,
-            type: bucket.type.rawValue,
-            title: bucket.title,
-            summary: bucket.summary,
-            files: bucket.files.sorted(),
-            symbols: bucket.symbols.sorted(),
-            riskLevel: bucket.riskLevel.rawValue,
-            riskReasons: bucket.riskReasons.sorted(),
-            evidence: bucket.evidence.sorted(),
-            reviewOrder: bucket.reviewOrder
-        )
-    }
-
-    private nonisolated static func mapRiskHighlight(_ highlight: RiskHighlight)
-        -> AgentRiskHighlightContext
-    {
-        AgentRiskHighlightContext(
-            id: highlight.id,
-            bucketId: highlight.bucketId,
-            severity: highlight.severity.rawValue,
-            category: highlight.category.rawValue,
-            title: highlight.title,
-            filePath: highlight.filePath,
-            lineStart: highlight.lineStart,
-            lineEnd: highlight.lineEnd,
-            evidence: highlight.evidence.sorted(),
-            source: highlight.source,
-            confidence: highlight.confidence
-        )
-    }
-
-    private nonisolated static func mapSkimTarget(_ target: SkimTarget) -> AgentSkimTargetContext {
-        AgentSkimTargetContext(
+    private nonisolated static func mapSkimTarget(_ target: SkimTarget) -> MCPSkimTarget {
+        MCPSkimTarget(
             id: target.id,
             filePath: target.filePath,
             reason: target.reason,
             classification: target.classification.rawValue,
             additions: target.additions,
-            deletions: target.deletions,
-            groupName: skimGroupName(for: target.classification)
+            deletions: target.deletions
         )
     }
 
@@ -357,23 +399,20 @@ enum AgentContextBuilder {
         _ hunk: DiffHunk,
         index: Int,
         detailLevel: AgentContextDetailLevel
-    ) -> AgentHunkContext {
+    ) -> MCPHunk {
         let ranges = changedLineRanges(in: hunk)
         let previewLimit: Int
         switch detailLevel {
-        case .summary:
-            previewLimit = 0
-        case .standard:
-            previewLimit = 12
-        case .full:
-            previewLimit = 120
+        case .summary: previewLimit = 0
+        case .standard: previewLimit = 12
+        case .full: previewLimit = 120
         }
         let preview = Array(hunk.lines.prefix(previewLimit))
-        return AgentHunkContext(
+        return MCPHunk(
             index: index,
             oldStart: hunk.oldStart,
-            oldLines: hunk.oldLines,
             newStart: hunk.newStart,
+            oldLines: hunk.oldLines,
             newLines: hunk.newLines,
             changedLineRanges: ranges,
             previewLines: preview,
@@ -381,15 +420,15 @@ enum AgentContextBuilder {
         )
     }
 
-    private nonisolated static func changedLineRanges(in hunk: DiffHunk) -> [AgentLineRange] {
-        var ranges: [AgentLineRange] = []
+    private nonisolated static func changedLineRanges(in hunk: DiffHunk) -> [MCPLineRange] {
+        var ranges: [MCPLineRange] = []
         var currentLine = hunk.newStart
         var pendingStart: Int?
         var previousAdded: Int?
 
         func finishPending() {
             if let start = pendingStart, let end = previousAdded {
-                ranges.append(AgentLineRange(start: start, end: end))
+                ranges.append(MCPLineRange(start: start, end: end))
             }
             pendingStart = nil
             previousAdded = nil
@@ -397,9 +436,7 @@ enum AgentContextBuilder {
 
         for rawLine in hunk.lines {
             if rawLine.hasPrefix("+") && !rawLine.hasPrefix("+++") {
-                if pendingStart == nil {
-                    pendingStart = currentLine
-                }
+                if pendingStart == nil { pendingStart = currentLine }
                 previousAdded = currentLine
                 currentLine += 1
             } else if rawLine.hasPrefix("-") {
@@ -413,22 +450,21 @@ enum AgentContextBuilder {
         return ranges
     }
 
-    private nonisolated static func cap(for options: AgentContextOptions) -> Int {
-        switch options.detailLevel {
-        case .summary:
-            min(options.maxItems, 20)
-        case .standard:
-            options.maxItems
-        case .full:
-            max(options.maxItems, 100)
+    private nonisolated static func capHunkLines(_ hunks: [MCPHunk], maxLines: Int) -> [MCPHunk] {
+        var remaining = maxLines
+        return hunks.map { hunk in
+            var copy = hunk
+            if remaining <= 0 {
+                copy.previewLines = []
+                copy.truncated = true
+                return copy
+            }
+            let prefix = Array(copy.previewLines.prefix(remaining))
+            remaining -= prefix.count
+            copy.truncated = copy.truncated || prefix.count < copy.previewLines.count
+            copy.previewLines = prefix
+            return copy
         }
-    }
-
-    private nonisolated static func limited<T>(_ items: [T], _ limit: Int) -> (
-        items: [T], truncated: Bool
-    ) {
-        let capped = Array(items.prefix(max(0, limit)))
-        return (capped, items.count > capped.count)
     }
 
     private nonisolated static func count(_ values: [String]) -> [String: Int] {
@@ -437,45 +473,37 @@ enum AgentContextBuilder {
 
     private nonisolated static func severityRank(_ severity: Severity) -> Int {
         switch severity {
-        case .info:
-            1
-        case .low:
-            2
-        case .medium:
-            3
-        case .high:
-            4
+        case .info: 1
+        case .low: 2
+        case .medium: 3
+        case .high: 4
         }
     }
 
-    private nonisolated static func skimGroupName(
-        for classification: ChangedFile.FileClassification
-    )
-        -> String
-    {
-        switch classification {
-        case .generated:
-            "Generated & Lockfiles"
-        case .config:
-            "Configuration"
-        case .documentation:
-            "Documentation"
-        case .boilerplate:
-            "Boilerplate"
+    private nonisolated static func targetMatchesFocus(
+        _ target: MCPReviewTarget, focus: String
+    ) -> Bool {
+        let text = "\(target.title) \(target.reason) \(target.source)".lowercased()
+        switch focus {
+        case "needs_attention":
+            return target.severity == "medium" || target.severity == "high"
+        case "security":
+            return text.contains("security") || text.contains("auth")
+        case "contracts":
+            return text.contains("contract") || text.contains("api")
+        case "tests":
+            return text.contains("test")
         default:
-            "Other"
+            return true
         }
     }
 
-    private nonisolated static func filteredMetadata(_ metadata: [String: String], prefix: String)
-        -> [String: String]
-    {
-        metadata.filter { key, _ in key.hasPrefix(prefix) }
-    }
-
-    private nonisolated static func filteredMetadata(_ metadata: [String: String], suffix: String)
-        -> [String: String]
-    {
-        metadata.filter { key, _ in key.hasSuffix(suffix) }
+    private nonisolated static func bucketMatchesFocus(_ bucket: MCPBucket, focus: String) -> Bool {
+        switch focus {
+        case "security": return bucket.type == "auth-security"
+        case "contracts": return bucket.type == "api-contract"
+        case "tests": return bucket.type == "tests"
+        default: return true
+        }
     }
 }

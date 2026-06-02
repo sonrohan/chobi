@@ -1,146 +1,134 @@
 import Foundation
 
-enum AgentContextDetailLevel: String, Codable, CaseIterable, Sendable {
-    case summary
-    case standard
-    case full
-}
+// MARK: - MCP output models
 
-struct AgentContextOptions: Codable, Equatable, Sendable {
-    var detailLevel: AgentContextDetailLevel
-    var includeFiles: Bool
-    var includeSymbols: Bool
-    var maxItems: Int
-
-    nonisolated init(
-        detailLevel: AgentContextDetailLevel = .standard,
-        includeFiles: Bool = true,
-        includeSymbols: Bool = false,
-        maxItems: Int = 30
-    ) {
-        self.detailLevel = detailLevel
-        self.includeFiles = includeFiles
-        self.includeSymbols = includeSymbols
-        self.maxItems = max(1, maxItems)
-    }
-}
-
-struct AgentTruncation: Codable, Equatable, Sendable {
-    var files: Bool
-    var symbols: Bool
-    var findings: Bool
-    var reviewTargets: Bool
-    var buckets: Bool
-    var riskHighlights: Bool
-    var skimTargets: Bool
-
-    var any: Bool {
-        files || symbols || findings || reviewTargets || buckets || riskHighlights || skimTargets
-    }
-}
-
-struct AgentWorkspaceContext: Codable, Equatable, Sendable {
-    var id: String?
+// chobi.list_workspaces
+struct MCPWorkspace: Codable, Equatable, Identifiable, Sendable {
+    var id: String
     var name: String
-    var path: String?
-    var activeBranch: String?
+    var pathBasename: String
+    var isSelected: Bool
+    var branch: String?
+    var latestRunId: String?
+    var latestRunStatus: String?
 }
 
-struct AgentReviewScope: Codable, Equatable, Sendable {
+// chobi.get_analysis_summary
+struct MCPAnalysisSummary: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var source: String
+    var workspaceId: String?
+    var workspaceName: String
     var runId: String
-    var pullRequestId: String
-    var pullRequestNumber: Int
-    var pullRequestTitle: String
-    var baseSha: String
-    var headSha: String
-    var selectedCommitSha: String?
-    var status: String
-    var createdAt: Date
-    var updatedAt: Date
-}
-
-struct AgentReviewSummary: Codable, Equatable, Sendable {
+    var branch: String?
     var riskScore: Int
-    var changedFileCount: Int
+    var riskFactors: [String]
+    var fileCount: Int
     var additions: Int
     var deletions: Int
-    var fileStatusCounts: [String: Int]
     var fileClassificationCounts: [String: Int]
+    var fileStatusCounts: [String: Int]
     var findingSeverityCounts: [String: Int]
-    var findingCategoryCounts: [String: Int]
     var symbolCount: Int
-    var topRiskFactors: [String]
+    var buckets: [MCPBucket]
+    var reviewTargetCount: Int
+    var skimTargetCount: Int
+    var truncated: Bool
+    var nextActions: [String]
 }
 
-struct AgentProfileContext: Codable, Equatable, Sendable {
-    var id: String
-    var displayName: String
-    var source: String
-    var sourcePath: String?
-    var detectedPresetId: String?
-    var fileClassificationRuleCount: Int
-    var bucketRuleCount: Int
-    var symbolGroupRuleCount: Int
-    var semanticHighlightRuleCount: Int
-    var fileHighlightRuleCount: Int
-    var ruleCounts: [String: Int]
-    var riskScoring: AgentRiskScoringContext
-}
-
-struct AgentRiskScoringContext: Codable, Equatable, Sendable {
-    var apiPathCount: Int
-    var sensitivePathCount: Int
-    var productionChangeDelta: Int
-    var apiPathDelta: Int
-    var sensitivePathDelta: Int
-    var missingTestsDelta: Int
-}
-
-struct AgentReviewTargetContext: Codable, Equatable, Identifiable, Sendable {
-    var id: String
-    var priority: Int
-    var severity: String
-    var title: String
-    var filePath: String
-    var lineStart: Int?
-    var lineEnd: Int?
-    var reason: String
-    var evidence: String
-    var source: String
-}
-
-struct AgentFileContext: Codable, Equatable, Identifiable, Sendable {
+// chobi.list_changed_files
+struct MCPFileSummary: Codable, Equatable, Identifiable, Sendable {
     var id: String
     var path: String
     var status: String
     var classification: String
     var additions: Int
     var deletions: Int
-    var hunks: [AgentHunkContext]
-    var findings: [AgentFindingContext]
-    var symbols: [AgentSymbolContext]
-    var buckets: [String]
-    var riskHighlights: [AgentRiskHighlightContext]
-    var truncated: Bool
+    var findingCount: Int
+    var symbolCount: Int
+    var bucketIds: [String]
 }
 
-struct AgentHunkContext: Codable, Equatable, Sendable {
+struct MCPFileSummaryList: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var source: String
+    var workspaceId: String?
+    var runId: String
+    var files: [MCPFileSummary]
+    var truncated: Bool
+    var nextActions: [String]
+}
+
+// chobi.explain_file
+struct MCPFileDetail: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var source: String
+    var id: String
+    var path: String
+    var status: String
+    var classification: String
+    var additions: Int
+    var deletions: Int
+    var hunks: [MCPHunk]
+    var symbols: [MCPSymbolRef]
+    var findings: [MCPFinding]
+    var bucketIds: [String]
+    var riskHighlights: [MCPRiskHighlight]
+    var truncated: Bool
+    var nextActions: [String]
+}
+
+struct MCPHunk: Codable, Equatable, Sendable {
     var index: Int
     var oldStart: Int
-    var oldLines: Int
     var newStart: Int
+    var oldLines: Int
     var newLines: Int
-    var changedLineRanges: [AgentLineRange]
+    var changedLineRanges: [MCPLineRange]
     var previewLines: [String]
     var truncated: Bool
 }
 
-struct AgentLineRange: Codable, Equatable, Sendable {
+struct MCPLineRange: Codable, Equatable, Sendable {
     var start: Int
     var end: Int
 }
 
-struct AgentSymbolContext: Codable, Equatable, Identifiable, Sendable {
+struct MCPSymbolRef: Codable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var kind: String
+    var startLine: Int
+    var endLine: Int
+}
+
+struct MCPFinding: Codable, Equatable, Sendable {
+    var id: String
+    var severity: String
+    var category: String
+    var message: String
+    var lineStart: Int?
+    var lineEnd: Int?
+    var ruleSource: String
+    var evidence: String?
+}
+
+struct MCPRiskHighlight: Codable, Equatable, Sendable {
+    var id: String
+    var severity: String
+    var category: String
+    var title: String
+    var lineStart: Int?
+    var lineEnd: Int?
+    var evidence: [String]
+    var confidence: String
+}
+
+// chobi.explain_symbol
+struct MCPSymbolDetail: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var source: String
     var id: String
     var fileId: String
     var filePath: String?
@@ -153,25 +141,75 @@ struct AgentSymbolContext: Codable, Equatable, Identifiable, Sendable {
     var endLine: Int
     var callers: [String]
     var callees: [String]
+    var impactSummary: MCPImpactSummary?
     var contractDeltas: [String: String]
     var behaviorDeltas: [String: String]
-    var metadata: [String: String]
+    var nextActions: [String]
 }
 
-struct AgentFindingContext: Codable, Equatable, Identifiable, Sendable {
-    var id: String
-    var fileId: String
+// chobi.get_impact_graph
+struct MCPImpactGraph: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var source: String
+    var symbolId: String
+    var symbolName: String
     var filePath: String?
+    var startLine: Int
+    var endLine: Int
+    var summary: MCPImpactSummary
+    var callerNodes: [MCPGraphNode]
+    var calleeNodes: [MCPGraphNode]
+    var unresolvedCalleeNames: [String]
+    var nextActions: [String]
+}
+
+struct MCPImpactSummary: Codable, Equatable, Sendable {
+    var directCallerCount: Int
+    var directCalleeCount: Int
+    var transitiveCallerCount: Int
+    var transitiveCalleeCount: Int
+    var fileCount: Int
+    var testReferenceCount: Int
+    var impactLevel: String
+    var confidence: String
+}
+
+struct MCPGraphNode: Codable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var filePath: String
+    var line: Int?
+    var isChangedInPR: Bool
+    var isTest: Bool
+}
+
+// chobi.get_review_plan
+struct MCPReviewPlan: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var source: String
+    var runId: String
+    var targets: [MCPReviewTarget]
+    var buckets: [MCPBucket]
+    var riskHighlights: [MCPRiskHighlight]
+    var skimTargets: [MCPSkimTarget]
+    var truncated: Bool
+    var nextActions: [String]
+}
+
+struct MCPReviewTarget: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var priority: Int
     var severity: String
-    var category: String
-    var message: String
+    var title: String
+    var filePath: String
     var lineStart: Int?
     var lineEnd: Int?
-    var ruleSource: String
-    var evidence: String?
+    var reason: String
+    var evidence: String
+    var source: String
 }
 
-struct AgentBucketContext: Codable, Equatable, Identifiable, Sendable {
+struct MCPBucket: Codable, Equatable, Identifiable, Sendable {
     var id: String
     var type: String
     var title: String
@@ -180,91 +218,20 @@ struct AgentBucketContext: Codable, Equatable, Identifiable, Sendable {
     var symbols: [String]
     var riskLevel: String
     var riskReasons: [String]
-    var evidence: [String]
     var reviewOrder: Int
 }
 
-struct AgentRiskHighlightContext: Codable, Equatable, Identifiable, Sendable {
-    var id: String
-    var bucketId: String
-    var severity: String
-    var category: String
-    var title: String
-    var filePath: String
-    var lineStart: Int?
-    var lineEnd: Int?
-    var evidence: [String]
-    var source: String
-    var confidence: String
-}
-
-struct AgentSkimTargetContext: Codable, Equatable, Identifiable, Sendable {
+struct MCPSkimTarget: Codable, Equatable, Identifiable, Sendable {
     var id: String
     var filePath: String
     var reason: String
     var classification: String
     var additions: Int
     var deletions: Int
-    var groupName: String
 }
 
-struct AgentReviewPlanContext: Codable, Equatable, Sendable {
-    var targets: [AgentReviewTargetContext]
-    var buckets: [AgentBucketContext]
-    var riskHighlights: [AgentRiskHighlightContext]
-    var skimTargets: [AgentSkimTargetContext]
-}
-
-struct AgentReviewContext: Codable, Equatable, Sendable {
-    var schemaVersion: String
-    var source: String
-    var detailLevel: AgentContextDetailLevel
-    var workspace: AgentWorkspaceContext
-    var scope: AgentReviewScope
-    var summary: AgentReviewSummary
-    var profile: AgentProfileContext
-    var reviewPlan: AgentReviewPlanContext
-    var files: [AgentFileContext]
-    var symbols: [AgentSymbolContext]
-    var findings: [AgentFindingContext]
-    var truncated: AgentTruncation
-    var nextActions: [String]
-}
-
-struct AgentQueryMatch: Codable, Equatable, Identifiable, Sendable {
-    var id: String
-    var type: String
-    var title: String
-    var path: String?
-    var lineStart: Int?
-    var lineEnd: Int?
-    var snippet: String
-    var score: Int
-    var nextAction: String?
-}
-
-struct AgentQueryResult: Codable, Equatable, Sendable {
-    var schemaVersion: String
-    var source: String
-    var runId: String?
-    var workspaceId: String?
-    var query: String
-    var matches: [AgentQueryMatch]
-    var truncated: Bool
-    var nextActions: [String]
-}
-
-struct AgentWorkspaceSummary: Codable, Equatable, Identifiable, Sendable {
-    var id: String
-    var name: String
-    var pathBasename: String
-    var selected: Bool
-    var branch: String?
-    var latestRunId: String?
-    var latestRunStatus: String?
-}
-
-struct AgentFileRangeResult: Codable, Equatable, Sendable {
+// chobi.read_file_range
+struct MCPFileRange: Codable, Equatable, Sendable {
     var schemaVersion: String
     var source: String
     var workspaceId: String
@@ -272,12 +239,12 @@ struct AgentFileRangeResult: Codable, Equatable, Sendable {
     var revision: String
     var startLine: Int
     var endLine: Int
-    var lines: [AgentNumberedLine]
+    var lines: [MCPNumberedLine]
     var truncated: Bool
     var nextActions: [String]
 }
 
-struct AgentNumberedLine: Codable, Equatable, Sendable {
+struct MCPNumberedLine: Codable, Equatable, Sendable {
     var line: Int
     var text: String
 }

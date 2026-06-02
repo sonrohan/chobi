@@ -7,33 +7,9 @@ struct MCPToolRegistration: Codable, Equatable, Identifiable, Sendable {
     var inputSchema: [String: String]
 }
 
-struct MCPResourceRegistration: Codable, Equatable, Identifiable, Sendable {
-    var id: String { uri }
-    var uri: String
-    var name: String
-    var description: String
-    var mimeType: String
-}
-
-struct MCPPromptRegistration: Codable, Equatable, Identifiable, Sendable {
-    var id: String { name }
-    var name: String
-    var description: String
-}
-
 struct MCPRouteResult: Codable, Equatable, Sendable {
     var content: [[String: String]]
     var isError: Bool?
-}
-
-struct MCPPromptResult: Codable, Equatable, Sendable {
-    var description: String
-    var messages: [MCPPromptMessage]
-}
-
-struct MCPPromptMessage: Codable, Equatable, Sendable {
-    var role: String
-    var content: [String: String]
 }
 
 actor MCPRequestRouter {
@@ -47,119 +23,112 @@ actor MCPRequestRouter {
         self.encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     }
 
+    // MARK: - Tool Registry
+
     nonisolated static let tools: [MCPToolRegistration] = [
         MCPToolRegistration(
             name: "chobi.list_workspaces",
-            description: "List registered Chobi workspaces and latest analysis status.",
-            inputSchema: ["includeInactive": "boolean"]),
+            description: "List registered Chobi workspaces and latest analysis run status.",
+            inputSchema: ["includeInactive": "boolean"]
+        ),
         MCPToolRegistration(
-            name: "chobi.get_current_review_context",
-            description: "Return bounded review context for the selected workspace analysis.",
-            inputSchema: detailSchema),
+            name: "chobi.get_analysis_summary",
+            description:
+                "Return a compact summary of the current or a specific analysis run: risk score, file counts, bucket breakdown, and top risk factors.",
+            inputSchema: ["runId": "string?"]
+        ),
         MCPToolRegistration(
-            name: "chobi.get_run_review_context",
-            description: "Return bounded review context for a specific analysis run.",
-            inputSchema: detailSchema.merging(["runId": "string"], uniquingKeysWith: { $1 })),
+            name: "chobi.list_changed_files",
+            description:
+                "Return the list of changed files with classification, line counts, finding counts, and bucket membership.",
+            inputSchema: [
+                "runId": "string?", "minSeverity": "info|low|medium|high", "maxItems": "integer",
+            ]
+        ),
         MCPToolRegistration(
             name: "chobi.explain_file",
-            description: "Explain why a changed file matters in the analysis.",
-            inputSchema: ["runId": "string?", "path": "string"]),
+            description:
+                "Return full context for a changed file: diff hunks, symbols, findings, risk highlights, and bucket membership.",
+            inputSchema: [
+                "runId": "string?",
+                "path": "string",
+                "includeHunks": "boolean",
+                "includeSymbols": "boolean",
+                "includeFindings": "boolean",
+                "maxHunkLines": "integer",
+            ]
+        ),
         MCPToolRegistration(
             name: "chobi.explain_symbol",
-            description: "Explain a changed symbol and AST/profile metadata.",
-            inputSchema: ["runId": "string?", "symbolName": "string"]),
+            description:
+                "Return context for a changed symbol: callers, callees, impact summary, contract deltas, and behavior deltas.",
+            inputSchema: [
+                "runId": "string?",
+                "path": "string?",
+                "symbolName": "string",
+                "line": "integer?",
+                "includeCallers": "boolean",
+                "includeCallees": "boolean",
+            ]
+        ),
         MCPToolRegistration(
-            name: "chobi.search_review_context",
-            description: "Search analyzed review context, not raw repository text.",
-            inputSchema: ["query": "string", "types": "string[]", "limit": "integer"]),
+            name: "chobi.get_impact_graph",
+            description:
+                "Return the call graph for a changed symbol: direct callers, callees, per-node file and test metadata, and an impact level summary.",
+            inputSchema: [
+                "runId": "string?",
+                "symbolName": "string",
+                "path": "string?",
+                "line": "integer?",
+            ]
+        ),
         MCPToolRegistration(
             name: "chobi.get_review_plan",
-            description: "Return ordered review targets, buckets, highlights, and skim targets.",
-            inputSchema: ["runId": "string?", "focus": "string"]),
-        MCPToolRegistration(
-            name: "chobi.get_profile_context",
-            description: "Explain the active analysis profile.",
-            inputSchema: ["workspaceId": "string?", "runId": "string?", "includeRules": "boolean"]),
+            description:
+                "Return ordered review targets, change buckets, risk highlights, and skim targets.",
+            inputSchema: ["runId": "string?", "focus": "string", "maxItems": "integer"]
+        ),
         MCPToolRegistration(
             name: "chobi.read_file_range",
             description: "Read a bounded line range from a workspace file.",
             inputSchema: [
-                "workspaceId": "string?", "path": "string", "startLine": "integer",
+                "workspaceId": "string?",
+                "path": "string",
+                "startLine": "integer",
                 "endLine": "integer",
-            ]),
-    ]
-
-    nonisolated static let resources: [MCPResourceRegistration] = [
-        MCPResourceRegistration(
-            uri: "chobi://workspaces", name: "Workspaces",
-            description: "Registered workspaces and latest run status.",
-            mimeType: "application/json"),
-        MCPResourceRegistration(
-            uri: "chobi://workspace/current/current-run", name: "Current Run",
-            description: "Current selected review context.", mimeType: "application/json"),
-        MCPResourceRegistration(
-            uri: "chobi://run/current/summary", name: "Current Summary",
-            description: "Current run summary.", mimeType: "application/json"),
-        MCPResourceRegistration(
-            uri: "chobi://run/current/review-plan", name: "Current Review Plan",
-            description: "Current ordered review plan.", mimeType: "application/json"),
-        MCPResourceRegistration(
-            uri: "chobi://run/current/profile", name: "Current Profile",
-            description: "Current profile context.", mimeType: "application/json"),
-        MCPResourceRegistration(
-            uri: "chobi://run/current/files", name: "Current Files",
-            description: "Current changed file contexts.", mimeType: "application/json"),
-        MCPResourceRegistration(
-            uri: "chobi://run/current/symbols", name: "Current Symbols",
-            description: "Current changed symbol contexts.", mimeType: "application/json"),
-        MCPResourceRegistration(
-            uri: "chobi://run/current/findings", name: "Current Findings",
-            description: "Current deterministic findings.", mimeType: "application/json"),
-    ]
-
-    nonisolated static let prompts: [MCPPromptRegistration] = [
-        MCPPromptRegistration(
-            name: "chobi.review_change",
-            description: "Use Chobi context to review a change."),
-        MCPPromptRegistration(
-            name: "chobi.understand_change",
-            description: "Summarize a change using buckets, symbols, and profile evidence."),
-        MCPPromptRegistration(
-            name: "chobi.write_review_comment",
-            description: "Ground review comments in Chobi findings, files, and symbols."),
-    ]
-
-    private nonisolated static let detailSchema: [String: String] = [
-        "detailLevel": "summary|standard|full",
-        "includeFiles": "boolean",
-        "includeSymbols": "boolean",
-        "maxItems": "integer",
+                "revision": "working|base|head",
+            ]
+        ),
     ]
 
     func listTools() -> [MCPToolRegistration] {
         Self.tools
     }
 
-    func listResources() -> [MCPResourceRegistration] {
-        Self.resources
-    }
-
-    func listPrompts() -> [MCPPromptRegistration] {
-        Self.prompts
-    }
+    // MARK: - Tool Dispatch
 
     func callTool(name: String, arguments: [String: Any]) async -> MCPRouteResult {
         do {
             switch name {
             case "chobi.list_workspaces":
-                return try success(await listWorkspaces(arguments))
-            case "chobi.get_current_review_context":
                 return try success(
-                    await queryService.currentReviewContext(options: options(arguments)))
-            case "chobi.get_run_review_context":
-                let runId = try requiredUUID(arguments, "runId")
+                    await queryService.listWorkspaces(
+                        includeInactive: bool(arguments, "includeInactive", default: true)))
+
+            case "chobi.get_analysis_summary":
                 return try success(
-                    await queryService.runReviewContext(runId: runId, options: options(arguments)))
+                    await queryService.getAnalysisSummary(
+                        runId: optionalUUID(arguments, "runId")))
+
+            case "chobi.list_changed_files":
+                let sev = optionalSeverity(arguments, "minSeverity")
+                return try success(
+                    await queryService.listChangedFiles(
+                        runId: optionalUUID(arguments, "runId"),
+                        minSeverity: sev,
+                        maxItems: int(arguments, "maxItems", default: 50)
+                    ))
+
             case "chobi.explain_file":
                 return try success(
                     await queryService.explainFile(
@@ -169,8 +138,8 @@ actor MCPRequestRouter {
                         includeSymbols: bool(arguments, "includeSymbols", default: true),
                         includeFindings: bool(arguments, "includeFindings", default: true),
                         maxHunkLines: int(arguments, "maxHunkLines", default: 120)
-                    )
-                )
+                    ))
+
             case "chobi.explain_symbol":
                 return try success(
                     await queryService.explainSymbol(
@@ -180,32 +149,25 @@ actor MCPRequestRouter {
                         line: optionalInt(arguments, "line"),
                         includeCallers: bool(arguments, "includeCallers", default: true),
                         includeCallees: bool(arguments, "includeCallees", default: true)
-                    )
-                )
-            case "chobi.search_review_context":
+                    ))
+
+            case "chobi.get_impact_graph":
                 return try success(
-                    await queryService.searchReviewContext(
+                    await queryService.getImpactGraph(
                         runId: optionalUUID(arguments, "runId"),
-                        query: requiredString(arguments, "query"),
-                        types: stringArray(arguments, "types", default: []),
-                        limit: int(arguments, "limit", default: 20)
-                    )
-                )
+                        symbolName: requiredString(arguments, "symbolName"),
+                        path: optionalString(arguments, "path"),
+                        line: optionalInt(arguments, "line")
+                    ))
+
             case "chobi.get_review_plan":
                 return try success(
-                    await queryService.reviewPlan(
+                    await queryService.getReviewPlan(
                         runId: optionalUUID(arguments, "runId"),
-                        focus: string(arguments, "focus", default: "all")
-                    )
-                )
-            case "chobi.get_profile_context":
-                return try success(
-                    await queryService.profileContext(
-                        workspaceId: optionalUUID(arguments, "workspaceId"),
-                        runId: optionalUUID(arguments, "runId"),
-                        includeRules: bool(arguments, "includeRules", default: true)
-                    )
-                )
+                        focus: string(arguments, "focus", default: "all"),
+                        maxItems: int(arguments, "maxItems", default: 30)
+                    ))
+
             case "chobi.read_file_range":
                 return try success(
                     await queryService.readFileRange(
@@ -214,8 +176,8 @@ actor MCPRequestRouter {
                         startLine: int(arguments, "startLine", default: 1),
                         endLine: int(arguments, "endLine", default: 1),
                         revision: string(arguments, "revision", default: "working")
-                    )
-                )
+                    ))
+
             default:
                 throw AgentContextError(
                     code: .unsupportedQuery, message: "Unknown MCP tool: \(name)")
@@ -228,80 +190,10 @@ actor MCPRequestRouter {
         }
     }
 
-    func readResource(uri: String) async -> MCPRouteResult {
-        do {
-            switch uri {
-            case "chobi://workspaces":
-                return try success(await queryService.listWorkspaces())
-            case "chobi://workspace/current/current-run",
-                "chobi://run/current/summary",
-                "chobi://run/current/files",
-                "chobi://run/current/symbols",
-                "chobi://run/current/findings":
-                return try success(
-                    await queryService.currentReviewContext(
-                        options: AgentContextOptions(
-                            detailLevel: .standard, includeFiles: true, includeSymbols: true)))
-            case "chobi://run/current/review-plan":
-                return try success(await queryService.reviewPlan(runId: nil, focus: "all"))
-            case "chobi://run/current/profile":
-                return try success(
-                    await queryService.profileContext(
-                        workspaceId: nil, runId: nil, includeRules: true))
-            default:
-                throw AgentContextError(
-                    code: .unsupportedQuery, message: "Unknown resource URI: \(uri)")
-            }
-        } catch let error as AgentContextError {
-            return errorResult(error)
-        } catch {
-            return errorResult(
-                AgentContextError(code: .invalidArguments, message: error.localizedDescription))
-        }
-    }
-
-    func getPrompt(name: String) throws -> MCPPromptResult {
-        let text: String
-        switch name {
-        case "chobi.review_change":
-            text =
-                "Call chobi.get_review_plan first, inspect high-risk files with chobi.explain_file, then produce review findings grounded in file, line, symbol, or rule evidence."
-        case "chobi.understand_change":
-            text =
-                "Call chobi.get_current_review_context and summarize the change using buckets, changed symbols, findings, skim targets, and profile evidence."
-        case "chobi.write_review_comment":
-            text =
-                "Use Chobi findings and symbol/file explanations. Each review comment should cite a path and line range when available."
-        default:
-            throw AgentContextError(code: .unsupportedQuery, message: "Unknown prompt: \(name)")
-        }
-        return MCPPromptResult(
-            description: name,
-            messages: [MCPPromptMessage(role: "user", content: ["type": "text", "text": text])]
-        )
-    }
-
-    private func listWorkspaces(_ arguments: [String: Any]) async throws -> [AgentWorkspaceSummary]
-    {
-        await queryService.listWorkspaces(
-            includeInactive: bool(arguments, "includeInactive", default: true))
-    }
-
-    private func options(_ arguments: [String: Any]) throws -> AgentContextOptions {
-        let detail = string(arguments, "detailLevel", default: "standard")
-        guard let detailLevel = AgentContextDetailLevel(rawValue: detail) else {
-            throw AgentContextError(code: .invalidArguments, message: "Invalid detailLevel.")
-        }
-        return AgentContextOptions(
-            detailLevel: detailLevel,
-            includeFiles: bool(arguments, "includeFiles", default: true),
-            includeSymbols: bool(arguments, "includeSymbols", default: false),
-            maxItems: int(arguments, "maxItems", default: 30)
-        )
-    }
+    // MARK: - Result helpers
 
     private func errorResult(_ error: AgentContextError) -> MCPRouteResult {
-        let payload = [
+        let payload: [String: Any] = [
             "schemaVersion": AgentContextBuilder.schemaVersion,
             "source": "chobi",
             "errorCode": error.code.rawValue,
@@ -324,11 +216,11 @@ actor MCPRequestRouter {
         guard JSONSerialization.isValidJSONObject(value),
             let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
             let text = String(data: data, encoding: .utf8)
-        else {
-            return "{}"
-        }
+        else { return "{}" }
         return text
     }
+
+    // MARK: - Argument helpers
 
     private func requiredString(_ args: [String: Any], _ key: String) throws -> String {
         guard let value = args[key] as? String, !value.isEmpty else {
@@ -362,12 +254,6 @@ actor MCPRequestRouter {
         return int(args, key, default: 0)
     }
 
-    private func stringArray(_ args: [String: Any], _ key: String, default defaultValue: [String])
-        -> [String]
-    {
-        args[key] as? [String] ?? defaultValue
-    }
-
     private func requiredUUID(_ args: [String: Any], _ key: String) throws -> UUID {
         guard let uuid = UUID(uuidString: try requiredString(args, key)) else {
             throw AgentContextError(code: .invalidArguments, message: "\(key) must be a UUID.")
@@ -381,5 +267,10 @@ actor MCPRequestRouter {
             throw AgentContextError(code: .invalidArguments, message: "\(key) must be a UUID.")
         }
         return uuid
+    }
+
+    private func optionalSeverity(_ args: [String: Any], _ key: String) -> Severity? {
+        guard let raw = optionalString(args, key) else { return nil }
+        return Severity(rawValue: raw)
     }
 }
