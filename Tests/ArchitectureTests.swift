@@ -158,6 +158,94 @@ final class ArchitectureTests: XCTestCase {
         XCTAssertEqual(viewModel.fileImpactIndicators[file.id]?.count, 1)
     }
 
+    // MARK: - ReviewModeViewModel Tests
+
+    func testReviewModeViewModelFiltersAndTracksReviewedFiles() async {
+        let run = AnalysisRun(pullRequestId: UUID(), baseSha: "base", headSha: "head")
+        let sourceFile = ChangedFile(
+            analysisRunId: run.id, path: "Chobi/Views/DiffViewer.swift",
+            status: .modified, additions: 8, deletions: 2, classification: .source, hunks: [])
+        let testFile = ChangedFile(
+            analysisRunId: run.id, path: "Tests/DiffViewerTests.swift",
+            status: .added, additions: 12, deletions: 0, classification: .test, hunks: [])
+        let badge = ReviewFileTreeBadge(
+            count: 2,
+            severity: .high,
+            highCount: 1,
+            mediumCount: 0,
+            callerCount: 3,
+            weakTestCount: 1
+        )
+        let viewModel = ReviewModeViewModel()
+
+        viewModel.fileSearchText = "views"
+        XCTAssertEqual(
+            viewModel.filteredFiles(
+                orderedFiles: [sourceFile, testFile], badges: [sourceFile.id: badge]
+            )
+            .map(\.id),
+            [sourceFile.id]
+        )
+
+        viewModel.fileSearchText = ""
+        viewModel.excludedClassifications = [.test]
+        XCTAssertEqual(
+            viewModel.filteredFiles(
+                orderedFiles: [sourceFile, testFile], badges: [sourceFile.id: badge]
+            )
+            .map(\.id),
+            [sourceFile.id]
+        )
+
+        viewModel.markReviewed(sourceFile.id)
+        viewModel.showUnviewedOnly = true
+        viewModel.excludedClassifications = []
+        XCTAssertEqual(
+            viewModel.filteredFiles(
+                orderedFiles: [sourceFile, testFile], badges: [sourceFile.id: badge]
+            )
+            .map(\.id),
+            [testFile.id]
+        )
+    }
+
+    func testReviewModeViewModelActiveFileFallbackAndNavigationUnhide() async {
+        let run = AnalysisRun(pullRequestId: UUID(), baseSha: "base", headSha: "head")
+        let lowFile = ChangedFile(
+            analysisRunId: run.id, path: "Sources/Low.swift",
+            status: .modified, additions: 2, deletions: 1, classification: .source, hunks: [])
+        let highFile = ChangedFile(
+            analysisRunId: run.id, path: "Sources/High.swift",
+            status: .modified, additions: 6, deletions: 1, classification: .source, hunks: [])
+        let lowBadge = ReviewFileTreeBadge(
+            count: 1, severity: .low, highCount: 0, mediumCount: 0, callerCount: 1,
+            weakTestCount: 1)
+        let highBadge = ReviewFileTreeBadge(
+            count: 3, severity: .high, highCount: 1, mediumCount: 0, callerCount: 5,
+            weakTestCount: 0)
+        let viewModel = ReviewModeViewModel()
+        let badges = [lowFile.id: lowBadge, highFile.id: highBadge]
+
+        viewModel.minimumImpactFilter = .high
+        let filtered = viewModel.filteredFiles(orderedFiles: [lowFile, highFile], badges: badges)
+        XCTAssertEqual(filtered.map(\.id), [highFile.id])
+        XCTAssertEqual(
+            viewModel.activeFile(activeFileId: lowFile.id, filteredFiles: filtered)?.id,
+            highFile.id
+        )
+
+        viewModel.fileSearchText = "High"
+        viewModel.excludedExtensions = [".swift"]
+        viewModel.markReviewed(lowFile.id)
+        viewModel.showUnviewedOnly = true
+        viewModel.unhideForNavigation(file: lowFile, badges: badges)
+
+        XCTAssertEqual(viewModel.minimumImpactFilter, .all)
+        XCTAssertTrue(viewModel.fileSearchText.isEmpty)
+        XCTAssertFalse(viewModel.excludedExtensions.contains(".swift"))
+        XCTAssertFalse(viewModel.showUnviewedOnly)
+    }
+
     // MARK: - WorkspacePickerViewModel Tests
 
     func testWorkspacePickerViewModelFiltering() async {
